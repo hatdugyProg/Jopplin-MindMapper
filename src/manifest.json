@@ -1,0 +1,16 @@
+{
+	"manifest_version": 1,
+	"id": "com.Zenith.MindMapper",
+	"app_min_version": "3.7",
+	"version": "1.0.0",
+	"name": "Mind Mapper",
+	"description": "Allows users to make mind maps or generate a mind map based off of their note/s",
+	"author": "MochaProgramming, hatdugyProg, ShikiNami27",
+	"homepage_url": "",
+	"repository_url": "https://github.com/hatdugyProg/Jopplin-MindMapper",
+	"keywords": [],
+	"categories": [],
+	"screenshots": [],
+	"icons": {},
+	"promo_tile": {}
+}
