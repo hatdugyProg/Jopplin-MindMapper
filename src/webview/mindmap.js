@@ -13,12 +13,17 @@
  *
  *   {
  *     rootId: 'n1',                                  <- the centre of the map
- *     nodes: [ { id, text, x, y, shape, color } ],   <- the boxes
+ *     layout: 'horizontal',                          <- 'horizontal' (sideways tree) or 'radial'
+ *     nodes: [ { id, text, x, y, shape, color,       <- the boxes
+ *                fontFamily, fontSize, bold, italic, <- (optional) text look
+ *                textColor, scale } ],               <- (optional) text color, node size
  *     edges: [ { id, from, to } ]                    <- the lines between boxes
  *   }
  *
  * shape is 'rect' | 'round' | 'ellipse' | 'diamond'.
  * x and y are positions on an infinite canvas ("world" coordinates).
+ * The optional node fields can be missing (old saved maps): the small
+ * "...Of(node)" helpers in section 3 fill in the default.
  *
  * THE BASIC IDEA  (state -> render)
  *   - The variables in section 2 describe everything on screen.
@@ -27,10 +32,10 @@
  *   - For edits the user may want to undo, use change(() => { ... }) (section 6).
  *
  * SECTIONS
- *   1. Settings            6. Editing actions
+ *   1. Settings            6. Editing actions (and the format bar)
  *   2. State               7. Mouse and keyboard
  *   3. Small helpers       8. Talking to Joplin (load / save / auto)
- *   4. Radial Tree Layout  9. Start-up
+ *   4. Layouts             9. Start-up
  *   5. Drawing (render)
  * ========================================================================== */
 
@@ -41,11 +46,13 @@
   /* Change these numbers to tweak the look and feel. */
 
   const SVG_NS = 'http://www.w3.org/2000/svg';
-  const RING_GAP = 200; // distance between circles in the radial layout
+  const RING_GAP = 200; // radial layout: distance between circles
+  const H_GAP = 90; // sideways layout: empty space between two columns
+  const V_GAP = 18; // sideways layout: empty space between two rows
   const NODE_HEIGHT = 44;
   const MIN_NODE_WIDTH = 110;
   const MAX_NODE_WIDTH = 260;
-  const CHAR_WIDTH = 8; // rough width of one letter, used to size boxes
+  const CHAR_WIDTH_RATIO = 0.58; // one letter is about this x the font size wide (sizes the boxes)
   const MIN_ZOOM = 0.2;
   const MAX_ZOOM = 3;
   const SAVE_DELAY_MS = 1000; // auto-save this long after the last change
@@ -53,9 +60,44 @@
   const ROOT_COLOR = '#ffe9a8';
   const DEFAULT_COLOR = '#dbe7ff';
 
+  const DEFAULT_LAYOUT = 'horizontal'; // what new maps use
+  const DEFAULT_FONT_SIZE = 14;
+  const MIN_FONT_SIZE = 8;
+  const MAX_FONT_SIZE = 48;
+  const FONT_STEP = 2; // how much the A- / A+ buttons change the size
+  const COMPACT_BELOW_PX = 720; // panels narrower than this show icons only
+
+  /* The font menu. To add a font: add one line. "css" is the normal CSS font-family list;
+     the first font the computer has is used, the rest are backups. */
+  const FONT_CHOICES = [
+    { value: 'sans', label: 'Sans-serif', css: '"Segoe UI", Arial, sans-serif' },
+    { value: 'serif', label: 'Serif', css: 'Georgia, "Times New Roman", serif' },
+    { value: 'mono', label: 'Monospace', css: 'Consolas, "Courier New", monospace' },
+    { value: 'easy', label: 'Easy-read', css: 'Verdana, Tahoma, sans-serif' },
+    { value: 'hand', label: 'Handwritten', css: '"Comic Sans MS", "Segoe Print", cursive' },
+  ];
+
+  /* The node-size menu. "value" is how many times bigger than normal the node is. */
+  const SIZE_CHOICES = [
+    { value: '0.8', label: 'Small' },
+    { value: '1', label: 'Medium' },
+    { value: '1.3', label: 'Large' },
+    { value: '1.7', label: 'Extra large' },
+  ];
+
+  /* The colors shown in the color popup. */
+  const FILL_COLORS = [
+    '#ffe9a8', '#dbe7ff', '#ffd6d6', '#d3f9d8', '#e5dbff', '#ffe8cc',
+    '#c5f6fa', '#fcc2d7', '#ffffff', '#ced4da', '#4a6fa5', '#2b2b2b',
+  ];
+  const TEXT_COLORS = [
+    '#1a1a1a', '#ffffff', '#c92a2a', '#1864ab', '#2b8a3e', '#e67700',
+    '#862e9c', '#495057',
+  ];
+
   /* ============================ 2. STATE =================================== */
 
-  let graph = { nodes: [], edges: [], rootId: null }; // the map itself
+  let graph = { nodes: [], edges: [], rootId: null, layout: DEFAULT_LAYOUT }; // the map itself
   let view = { x: 0, y: 0, zoom: 1 }; // where the camera is looking
   let selection = { type: null, id: null }; // type: 'node' | 'edge' | null
   let connectMode = false; // is the Connect tool on?
@@ -63,6 +105,7 @@
   let drag = null; // info about the drag in progress (if any)
   let lastClick = { time: 0, nodeId: null, x: 0, y: 0 }; // used to detect double-clicks
   let editInput = null; // the rename text box (if open)
+  let paletteTarget = null; // which color the popup is changing: 'fill' | 'text' | null (closed)
   let currentNoteId = null; // which note this map belongs to
   let saveTimer = null; // pending auto-save
   let needsFit = false; // "fit the map on screen as soon as there is room"
@@ -78,14 +121,30 @@
   const world = byId('mm-world');
   const edgeLayer = byId('mm-edges');
   const nodeLayer = byId('mm-nodes');
-  const colorInput = byId('mm-color');
-  const shapeSelect = byId('mm-shape');
   const connectButton = byId('mm-connect');
   const deleteButton = byId('mm-delete');
   const undoButton = byId('mm-undo');
   const redoButton = byId('mm-redo');
+  const layoutSelect = byId('mm-layout');
   const hintBox = byId('mm-hint');
   const statusBox = byId('mm-status');
+  // The format bar (second toolbar row)
+  const fontSelect = byId('mm-font');
+  const fontSizeInput = byId('mm-font-size');
+  const boldButton = byId('mm-bold');
+  const italicButton = byId('mm-italic');
+  const shapeSelect = byId('mm-shape');
+  const scaleSelect = byId('mm-scale');
+  const fillPreview = byId('mm-fill-preview');
+  const textBar = byId('mm-text-bar');
+  // Every control in the format bar: they are all greyed out when no node is selected.
+  const formatControls = appBox.querySelectorAll('#mm-format button, #mm-format select, #mm-format input');
+  // The color popup
+  const palette = byId('mm-palette');
+  const paletteTitle = byId('mm-palette-title');
+  const swatchBox = byId('mm-swatches');
+  const hexInput = byId('mm-hex');
+  const autoTextButton = byId('mm-text-auto');
 
   /* ========================= 3. SMALL HELPERS ============================== */
 
@@ -125,12 +184,46 @@
     return graph.edges.some((e) => (e.from === a && e.to === b) || (e.from === b && e.to === a));
   }
 
-  /** How big a node is. It grows with its text, and depends on its shape. */
+  /* ---- Text look of a node. Old maps do not have these fields, so each helper
+          returns a default when the field is missing. ---- */
+
+  /** The font choice (an item of FONT_CHOICES) this node uses. */
+  function fontChoiceOf(node) {
+    return FONT_CHOICES.find((font) => font.value === node.fontFamily) || FONT_CHOICES[0];
+  }
+
+  function fontSizeOf(node) {
+    return node.fontSize || DEFAULT_FONT_SIZE;
+  }
+
+  /** How many times bigger than normal the node is (1 = normal). */
+  function scaleOf(node) {
+    return node.scale || 1;
+  }
+
+  /** The text color: the one the user picked, or automatic (dark on light, white on dark). */
+  function textColorOf(node) {
+    return node.textColor || textColorFor(node.color);
+  }
+
+  /** Rough width of one letter of this node's text, in pixels. */
+  function charWidthOf(node) {
+    return fontSizeOf(node) * CHAR_WIDTH_RATIO * (node.bold ? 1.1 : 1);
+  }
+
+  /** How big a node is. It grows with its text, its font size and its size setting,
+      and depends on its shape. */
   function getSize(node) {
-    const base = clamp(24 + node.text.length * CHAR_WIDTH, MIN_NODE_WIDTH, MAX_NODE_WIDTH);
-    if (node.shape === 'diamond') return { w: base * 1.4, h: NODE_HEIGHT * 1.6 };
-    if (node.shape === 'ellipse') return { w: base * 1.15, h: NODE_HEIGHT * 1.2 };
-    return { w: base, h: NODE_HEIGHT };
+    const fontSize = fontSizeOf(node);
+    const scale = scaleOf(node);
+    // A bigger font is allowed to make the box wider before the text gets cut with "..."
+    const widestAllowed = MAX_NODE_WIDTH * Math.max(1, fontSize / DEFAULT_FONT_SIZE);
+    const width = clamp(24 + node.text.length * charWidthOf(node), MIN_NODE_WIDTH, widestAllowed) * scale;
+    const height = Math.max(NODE_HEIGHT, fontSize * 2.4) * scale;
+
+    if (node.shape === 'diamond') return { w: width * 1.4, h: height * 1.6 };
+    if (node.shape === 'ellipse') return { w: width * 1.15, h: height * 1.2 };
+    return { w: width, h: height };
   }
 
   /** Dark text on light colors, white text on dark colors (readability). */
@@ -149,6 +242,20 @@
       element.setAttribute(name, attributes[name]);
     }
     return element;
+  }
+
+  /** The curved line between two nodes, as SVG path text.
+      If the nodes are further apart sideways, the curve leaves sideways (S-shape);
+      if they are further apart up/down, it leaves up/down. */
+  function edgePath(a, b) {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    if (Math.abs(dx) >= Math.abs(dy)) {
+      const midX = a.x + dx / 2;
+      return 'M ' + a.x + ' ' + a.y + ' C ' + midX + ' ' + a.y + ', ' + midX + ' ' + b.y + ', ' + b.x + ' ' + b.y;
+    }
+    const midY = a.y + dy / 2;
+    return 'M ' + a.x + ' ' + a.y + ' C ' + a.x + ' ' + midY + ', ' + b.x + ' ' + midY + ', ' + b.x + ' ' + b.y;
   }
 
   /** Mouse position on screen -> position on the canvas ("world"). */
@@ -224,10 +331,91 @@
     setHint('Double-click to rename · drag to move · scroll to pan · Ctrl+scroll to zoom');
   }
 
-  /* ====================== 4. RADIAL TREE LAYOUT ============================ */
-  /* Algorithm #3 from the proposal. Every node gets a slice of a circle; the
-     more leaves a node has below it, the bigger its slice. Depth = distance from
-     the centre. That is what keeps the map readable instead of tangled. */
+  /* ============================ 4. LAYOUTS ================================= */
+  /* A "layout" decides where every node goes. There are two:
+       - Sideways tree (horizontal): the root is on the left, its children in the next
+         column, and so on. Like a folder tree turned on its side. Easy to read.
+       - Radial: the root is in the centre and branches spread around it in circles. */
+
+  /** Turns the graph (boxes + lines) into a tree, starting from the root. */
+  function graphToTree(g) {
+    const rootId = g.nodes.some((n) => n.id === g.rootId) ? g.rootId : g.nodes[0].id;
+
+    // who is connected to whom? (lines work in both directions)
+    const neighbours = {};
+    g.nodes.forEach((n) => (neighbours[n.id] = []));
+    g.edges.forEach((e) => {
+      if (neighbours[e.from] && neighbours[e.to]) {
+        neighbours[e.from].push(e.to);
+        neighbours[e.to].push(e.from);
+      }
+    });
+
+    const rootTree = { id: rootId, children: [] };
+    const visited = new Set([rootId]);
+    const queue = [rootTree];
+    while (queue.length > 0) {
+      const current = queue.shift();
+      for (const neighbourId of neighbours[current.id]) {
+        if (!visited.has(neighbourId)) {
+          visited.add(neighbourId);
+          const child = { id: neighbourId, children: [] };
+          current.children.push(child);
+          queue.push(child);
+        }
+      }
+    }
+    return rootTree;
+  }
+
+  /** Arranges the map as a sideways tree. Nodes that are not connected to the root stay where they are.
+      Steps:
+        1. Find how wide each column (depth) needs to be.
+        2. Work out the x position of every column.
+        3. Give every leaf (node without children) its own row, top to bottom.
+        4. Put each parent in the middle of its children. */
+  function layoutHorizontal(g) {
+    const tree = graphToTree(g);
+    const nodeById = {};
+    g.nodes.forEach((n) => (nodeById[n.id] = n));
+
+    // 1. The widest node in each column.
+    const columnWidth = [];
+    (function measure(treeNode, depth) {
+      const width = getSize(nodeById[treeNode.id]).w;
+      columnWidth[depth] = Math.max(columnWidth[depth] || 0, width);
+      treeNode.children.forEach((child) => measure(child, depth + 1));
+    })(tree, 0);
+
+    // 2. The x of the CENTRE of each column (columns line up on their left side).
+    const columnX = [];
+    let left = 0;
+    columnWidth.forEach((width, depth) => {
+      columnX[depth] = left + width / 2;
+      left += width + H_GAP;
+    });
+
+    // 3 + 4. Rows. "nextY" is where the next leaf goes.
+    let nextY = 0;
+    (function place(treeNode, depth) {
+      const node = nodeById[treeNode.id];
+      node.x = columnX[depth];
+
+      if (treeNode.children.length === 0) {
+        const height = getSize(node).h;
+        node.y = nextY + height / 2;
+        nextY += height + V_GAP;
+      } else {
+        treeNode.children.forEach((child) => place(child, depth + 1));
+        const firstChild = nodeById[treeNode.children[0].id];
+        const lastChild = nodeById[treeNode.children[treeNode.children.length - 1].id];
+        node.y = (firstChild.y + lastChild.y) / 2; // halfway between the first and last child
+      }
+    })(tree, 0);
+  }
+
+  /* ---- Radial layout. Every node gets a slice of a circle; the more leaves a
+          node has below it, the bigger its slice. Depth = distance from the centre. ---- */
 
   const CENTER_X = 0;
   const CENTER_Y = 0;
@@ -263,41 +451,9 @@
     }
   }
 
-  /** Turns the graph (boxes + lines) into a tree, starting from the root. */
-  function graphToTree(g) {
-    const rootId = g.nodes.some((n) => n.id === g.rootId) ? g.rootId : g.nodes[0].id;
-
-    // who is connected to whom? (lines work in both directions)
-    const neighbours = {};
-    g.nodes.forEach((n) => (neighbours[n.id] = []));
-    g.edges.forEach((e) => {
-      if (neighbours[e.from] && neighbours[e.to]) {
-        neighbours[e.from].push(e.to);
-        neighbours[e.to].push(e.from);
-      }
-    });
-
-    const rootTree = { id: rootId, children: [] };
-    const visited = new Set([rootId]);
-    const queue = [rootTree];
-    while (queue.length > 0) {
-      const current = queue.shift();
-      for (const neighbourId of neighbours[current.id]) {
-        if (!visited.has(neighbourId)) {
-          visited.add(neighbourId);
-          const child = { id: neighbourId, children: [] };
-          current.children.push(child);
-          queue.push(child);
-        }
-      }
-    }
-    return rootTree;
-  }
-
   /** Moves every node that is connected to the root into its radial position.
       Nodes that are not connected to anything are left where they are. */
-  function relayoutRadial(g) {
-    if (g.nodes.length === 0) return;
+  function layoutRadial(g) {
     const tree = graphToTree(g);
     placeNode(tree, 0, 2 * Math.PI, 0);
 
@@ -309,9 +465,19 @@
     })(tree);
   }
 
+  /** Arranges the whole graph with the layout it uses (g.layout). */
+  function relayout(g) {
+    if (g.nodes.length === 0) return;
+    if (g.layout === 'radial') {
+      layoutRadial(g);
+    } else {
+      layoutHorizontal(g);
+    }
+  }
+
   /** Converts a generated tree ({ text, children }) into a graph, then lays it out. */
-  function treeToGraph(tree) {
-    const g = { nodes: [], edges: [], rootId: null };
+  function treeToGraph(tree, layout) {
+    const g = { nodes: [], edges: [], rootId: null, layout: layout || DEFAULT_LAYOUT };
 
     function addNode(treeNode, parentId) {
       const isRoot = parentId === null;
@@ -322,6 +488,10 @@
         isRoot ? 'ellipse' : 'round',
         isRoot ? ROOT_COLOR : DEFAULT_COLOR
       );
+      if (isRoot) {
+        node.fontSize = 18; // the main idea stands out
+        node.bold = true;
+      }
       g.nodes.push(node);
       if (!isRoot) g.edges.push(makeEdge(parentId, node.id));
       treeNode.children.forEach((child) => addNode(child, node.id));
@@ -329,14 +499,14 @@
 
     addNode(tree, null);
     g.rootId = g.nodes[0].id;
-    relayoutRadial(g);
+    relayout(g);
     return g;
   }
 
   /** A brand-new map: just one centre node with the note's title. */
   function newMap(title) {
     const root = makeNode(title || 'Main idea', 0, 0, 'ellipse', ROOT_COLOR);
-    return { nodes: [root], edges: [], rootId: root.id };
+    return { nodes: [root], edges: [], rootId: root.id, layout: DEFAULT_LAYOUT };
   }
 
   /* ======================= 5. DRAWING (render) ============================= */
@@ -355,14 +525,14 @@
       const a = findNode(edge.from);
       const b = findNode(edge.to);
       if (!a || !b) continue;
-      const coordinates = { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
+      const path = { d: edgePath(a, b) };
       const isSelected = selection.type === 'edge' && selection.id === edge.id;
 
-      const line = svgEl('line', coordinates);
+      const line = svgEl('path', path);
       line.setAttribute('class', 'mm-edge' + (isSelected ? ' selected' : ''));
       edgeLayer.appendChild(line);
 
-      const hitArea = svgEl('line', coordinates);
+      const hitArea = svgEl('path', path);
       hitArea.setAttribute('class', 'mm-edge-hit');
       hitArea.setAttribute('data-edge-id', edge.id);
       edgeLayer.appendChild(hitArea);
@@ -404,10 +574,18 @@
 
     // Cut very long text so it stays inside the shape (the full text is kept).
     const usableWidth = node.shape === 'diamond' ? w * 0.6 : w - 24;
-    const maxChars = Math.floor(usableWidth / CHAR_WIDTH);
+    const maxChars = Math.floor(usableWidth / charWidthOf(node));
     const shown = node.text.length > maxChars ? node.text.slice(0, maxChars - 1) + '…' : node.text;
 
-    const label = svgEl('text', { x: 0, y: 0, fill: textColorFor(node.color) });
+    const label = svgEl('text', {
+      x: 0,
+      y: 0,
+      fill: textColorOf(node),
+      'font-family': fontChoiceOf(node).css,
+      'font-size': fontSizeOf(node),
+      'font-weight': node.bold ? 'bold' : 'normal',
+      'font-style': node.italic ? 'italic' : 'normal',
+    });
     label.setAttribute('class', 'mm-text');
     label.textContent = shown; // textContent (not innerHTML) keeps note text from running as code
     group.appendChild(label);
@@ -415,15 +593,28 @@
     return group;
   }
 
-  /** Keeps the buttons in sync: greyed out when they cannot be used. */
+  /** Keeps the toolbars in sync with the selection: greyed out when they cannot be
+      used, and showing the selected node's font, size, colors and so on. */
   function updateToolbar() {
     const node = selectedNode();
+
+    // The whole format bar only works while a node is selected.
+    formatControls.forEach((control) => (control.disabled = !node));
+
     if (node) {
-      colorInput.value = node.color;
       shapeSelect.value = node.shape;
+      fontSelect.value = fontChoiceOf(node).value;
+      fontSizeInput.value = fontSizeOf(node);
+      scaleSelect.value = String(scaleOf(node));
+      fillPreview.style.background = node.color;
+      textBar.style.background = textColorOf(node);
+      boldButton.classList.toggle('active', !!node.bold);
+      italicButton.classList.toggle('active', !!node.italic);
+    } else {
+      closePalette();
     }
-    colorInput.disabled = !node;
-    shapeSelect.disabled = !node;
+
+    layoutSelect.value = graph.layout || DEFAULT_LAYOUT;
     deleteButton.disabled = selection.type === null;
     undoButton.disabled = undoStack.length === 0;
     redoButton.disabled = redoStack.length === 0;
@@ -539,6 +730,102 @@
     selection = { type: type, id: id };
   }
 
+  /* ---- The format bar: change one property of the selected node ---- */
+
+  /** Sets one property (like 'fontSize' or 'color') of the selected node. Can be undone. */
+  function setNodeProp(property, value) {
+    const node = selectedNode();
+    if (!node || node[property] === value) return;
+    change(() => {
+      node[property] = value;
+    });
+  }
+
+  /** Sets the font size of the selected node, keeping it between the minimum and maximum. */
+  function setFontSize(size) {
+    const number = parseInt(size, 10);
+    if (isNaN(number)) {
+      render(); // not a number: put the old size back in the box
+      return;
+    }
+    setNodeProp('fontSize', clamp(number, MIN_FONT_SIZE, MAX_FONT_SIZE));
+  }
+
+  function changeFontSizeBy(amount) {
+    const node = selectedNode();
+    if (node) setFontSize(fontSizeOf(node) + amount);
+  }
+
+  function toggleNodeProp(property) {
+    const node = selectedNode();
+    if (node) setNodeProp(property, !node[property]);
+  }
+
+  /* ---- The color popup ---- */
+
+  /** Opens the color popup under a button. "target" is 'fill' or 'text'.
+      Clicking the same button again closes it. */
+  function openPalette(target, button) {
+    const node = selectedNode();
+    if (!node) return;
+    if (paletteTarget === target) {
+      closePalette();
+      return;
+    }
+    paletteTarget = target;
+
+    const isFill = target === 'fill';
+    const colors = isFill ? FILL_COLORS : TEXT_COLORS;
+    const current = (isFill ? node.color : textColorOf(node)).toLowerCase();
+
+    paletteTitle.textContent = isFill ? 'Fill color' : 'Text color';
+    autoTextButton.hidden = isFill; // "Automatic" only makes sense for text
+    hexInput.value = current;
+
+    // One round button per color.
+    swatchBox.textContent = '';
+    for (const color of colors) {
+      const swatch = document.createElement('button');
+      swatch.type = 'button';
+      swatch.className = 'mm-swatch' + (color === current ? ' current' : '');
+      swatch.style.background = color;
+      swatch.setAttribute('data-action', 'pick-color');
+      swatch.setAttribute('data-color', color);
+      swatch.setAttribute('aria-label', 'Use color ' + color);
+      swatch.title = color;
+      swatchBox.appendChild(swatch);
+    }
+
+    // Put the popup just under the button, and keep it inside the panel.
+    // (The popup is positioned relative to the inside of the panel border, hence clientLeft/clientTop.)
+    const appRect = appBox.getBoundingClientRect();
+    const buttonRect = button.getBoundingClientRect();
+    palette.hidden = false;
+    const farthestLeft = Math.max(4, appRect.width - palette.offsetWidth - 8);
+    const left = buttonRect.left - appRect.left - appBox.clientLeft;
+    palette.style.left = clamp(left, 4, farthestLeft) + 'px';
+    palette.style.top = buttonRect.bottom - appRect.top - appBox.clientTop + 4 + 'px';
+  }
+
+  function closePalette() {
+    paletteTarget = null;
+    palette.hidden = true;
+  }
+
+  /** Applies a color (like '#1c7ed6') to whatever the popup is changing, then closes it. */
+  function applyColor(text) {
+    let color = text.trim().toLowerCase();
+    if (color.charAt(0) !== '#') color = '#' + color; // allow typing without the #
+    if (!/^#[0-9a-f]{6}$/.test(color)) {
+      setStatus('Type a color like #1c7ed6 (a # and 6 letters or numbers).');
+      return;
+    }
+    setNodeProp(paletteTarget === 'fill' ? 'color' : 'textColor', color);
+    closePalette();
+  }
+
+  /* ---- Adding and removing things ---- */
+
   /** Inserts a new, unconnected shape and lets the user type its text. */
   function addShape(shape, position) {
     const at = position || findFreeSpot(viewCenterWorld());
@@ -553,30 +840,46 @@
     startEditing(node.id);
   }
 
-  /** Adds a node connected to the selected one, placed on the side facing away from the centre. */
+  /** Where a new child of "parent" should appear.
+      Sideways layout: to the right of the parent, below its other children.
+      Radial layout: on the side facing away from the centre. */
+  function childSpot(parent) {
+    if (graph.layout !== 'radial') {
+      const siblings = graph.edges
+        .filter((e) => e.from === parent.id)
+        .map((e) => findNode(e.to))
+        .filter((node) => node);
+      let y = parent.y;
+      if (siblings.length > 0) {
+        const lowestEdge = Math.max(...siblings.map((s) => s.y + getSize(s).h / 2));
+        y = lowestEdge + V_GAP + NODE_HEIGHT / 2; // just under the last sibling
+      }
+      const x = parent.x + getSize(parent).w / 2 + H_GAP + MIN_NODE_WIDTH / 2;
+      return findFreeSpot({ x: x, y: y });
+    }
+
+    const root = findNode(graph.rootId) || parent;
+    const siblingCount = graph.edges.filter((e) => e.from === parent.id).length;
+    let angle;
+    if (parent === root) {
+      angle = siblingCount * 0.9; // spread the root's children around it
+    } else {
+      const awayFromRoot = Math.atan2(parent.y - root.y, parent.x - root.x);
+      const fan = (siblingCount % 2 === 1 ? 1 : -1) * Math.ceil(siblingCount / 2) * 0.5;
+      angle = awayFromRoot + fan;
+    }
+    return { x: parent.x + 220 * Math.cos(angle), y: parent.y + 220 * Math.sin(angle) };
+  }
+
+  /** Adds a node connected to the selected one. */
   function addChild() {
     const parent = selectedNode();
     if (!parent) {
       setStatus('Select a node first, then press + Child.');
       return;
     }
-    const root = findNode(graph.rootId) || parent;
-    const siblings = graph.edges.filter((e) => e.from === parent.id).length;
-
-    let angle;
-    if (parent === root) {
-      angle = siblings * 0.9; // spread the root's children around it
-    } else {
-      const awayFromRoot = Math.atan2(parent.y - root.y, parent.x - root.x);
-      const fan = (siblings % 2 === 1 ? 1 : -1) * Math.ceil(siblings / 2) * 0.5;
-      angle = awayFromRoot + fan;
-    }
-
-    const child = makeNode(
-      'New idea',
-      parent.x + 220 * Math.cos(angle),
-      parent.y + 220 * Math.sin(angle)
-    );
+    const spot = childSpot(parent);
+    const child = makeNode('New idea', spot.x, spot.y);
     change(() => {
       graph.nodes.push(child);
       graph.edges.push(makeEdge(parent.id, child.id));
@@ -634,8 +937,18 @@
     render();
   }
 
+  /** "Re-arrange" button: put every connected node back in its place using the chosen layout. */
   function rearrange() {
-    change(() => relayoutRadial(graph));
+    change(() => relayout(graph));
+    fitView();
+  }
+
+  /** The layout menu changed: remember the choice in the map, then re-arrange. */
+  function changeLayout(layout) {
+    change(() => {
+      graph.layout = layout;
+      relayout(graph);
+    });
     fitView();
   }
 
@@ -647,7 +960,7 @@
 
     const size = getSize(node);
     const boxWidth = Math.max(size.w, 140) * view.zoom;
-    const boxHeight = 32 * view.zoom;
+    const boxHeight = Math.max(32, fontSizeOf(node) * 2) * view.zoom;
 
     const input = document.createElement('input');
     input.type = 'text';
@@ -658,7 +971,10 @@
     input.style.height = boxHeight + 'px';
     input.style.left = node.x * view.zoom + view.x - boxWidth / 2 + 'px';
     input.style.top = node.y * view.zoom + view.y - boxHeight / 2 + 'px';
-    input.style.fontSize = 14 * view.zoom + 'px';
+    input.style.fontSize = fontSizeOf(node) * view.zoom + 'px'; // same look as the node text
+    input.style.fontFamily = fontChoiceOf(node).css;
+    input.style.fontWeight = node.bold ? 'bold' : 'normal';
+    input.style.fontStyle = node.italic ? 'italic' : 'normal';
     canvasBox.appendChild(input);
     editInput = input;
 
@@ -705,23 +1021,43 @@
     'zoom-out': () => zoomAt(svg.clientWidth / 2, svg.clientHeight / 2, 0.8),
     fit: () => fitView(),
     close: () => closePanel(),
+    // format bar
+    'font-smaller': () => changeFontSizeBy(-FONT_STEP),
+    'font-bigger': () => changeFontSizeBy(FONT_STEP),
+    'toggle-bold': () => toggleNodeProp('bold'),
+    'toggle-italic': () => toggleNodeProp('italic'),
+    // color popup
+    'open-palette': (button) => openPalette(button.dataset.target, button),
+    'pick-color': (button) => applyColor(button.dataset.color),
+    'auto-text-color': () => {
+      setNodeProp('textColor', null); // null = automatic (dark or white, whichever is readable)
+      closePalette();
+    },
   };
 
   appBox.addEventListener('click', (event) => {
     const button = event.target.closest('[data-action]');
     if (button && actions[button.dataset.action]) {
+      // Any button closes the color popup, except the ones that open/use it.
+      if (button.dataset.action !== 'open-palette') closePalette();
       actions[button.dataset.action](button);
+    } else if (!event.target.closest('#mm-palette')) {
+      closePalette(); // clicked somewhere else
     }
   });
 
-  colorInput.addEventListener('change', () => {
-    const node = selectedNode();
-    if (node) change(() => (node.color = colorInput.value));
-  });
+  /* ---- The menus and boxes of the format bar ---- */
 
-  shapeSelect.addEventListener('change', () => {
-    const node = selectedNode();
-    if (node) change(() => (node.shape = shapeSelect.value));
+  fontSelect.addEventListener('change', () => setNodeProp('fontFamily', fontSelect.value));
+  fontSizeInput.addEventListener('change', () => setFontSize(fontSizeInput.value));
+  shapeSelect.addEventListener('change', () => setNodeProp('shape', shapeSelect.value));
+  scaleSelect.addEventListener('change', () => setNodeProp('scale', parseFloat(scaleSelect.value)));
+  layoutSelect.addEventListener('change', () => changeLayout(layoutSelect.value));
+
+  hexInput.addEventListener('keydown', (event) => {
+    event.stopPropagation(); // typing a color must not trigger shortcuts
+    if (event.key === 'Enter') applyColor(hexInput.value);
+    if (event.key === 'Escape') closePalette();
   });
 
   /* ---- Mouse on the canvas ---- */
@@ -838,6 +1174,7 @@
       event.preventDefault();
       addChild();
     } else if (event.key === 'Escape') {
+      closePalette();
       if (connectMode) toggleConnectMode();
       select(null, null);
       render();
@@ -887,7 +1224,7 @@
 
     if (reply.error) {
       currentNoteId = null;
-      graph = { nodes: [], edges: [], rootId: null };
+      graph = { nodes: [], edges: [], rootId: null, layout: DEFAULT_LAYOUT };
       setStatus(reply.error);
     } else {
       currentNoteId = reply.noteId;
@@ -900,12 +1237,16 @@
 
   /** Accepts the current save format, an older "tree" format, or nothing (new map). */
   function readSavedData(data, title) {
-    if (data && Array.isArray(data.nodes)) return data;
+    if (data && Array.isArray(data.nodes)) {
+      // Maps saved before the layout menu existed were all radial, so keep calling them radial.
+      data.layout = data.layout || 'radial';
+      return data;
+    }
     if (data && typeof data.text === 'string') return treeToGraph(data);
     return newMap(title);
   }
 
-  /** "Auto" and "From outline": ask Joplin for a tree, then lay it out radially. */
+  /** "Auto" and "From outline": ask Joplin for a tree, then lay it out with the map's layout. */
   async function generateFromNote(kind) {
     if (!currentNoteId) {
       setStatus('Open a note first.');
@@ -922,7 +1263,7 @@
       return;
     }
     change(() => {
-      graph = treeToGraph(reply.tree);
+      graph = treeToGraph(reply.tree, graph.layout);
       selection = { type: null, id: null };
     });
     fitView();
@@ -936,15 +1277,34 @@
 
   /* ============================ 9. START-UP ================================ */
 
+  /** Fills a <select> with options. "choices" is a list of { value, label }. */
+  function fillSelect(select, choices) {
+    for (const choice of choices) {
+      const option = document.createElement('option');
+      option.value = choice.value;
+      option.textContent = choice.label;
+      select.appendChild(option);
+    }
+  }
+
+  fillSelect(fontSelect, FONT_CHOICES);
+  fillSelect(scaleSelect, SIZE_CHOICES);
+
   webviewApi.onMessage((event) => {
     if (event.message.name === 'noteChanged') loadCurrentNote();
   });
 
-  // When the panel gets a size (first time it is shown, or when it is resized):
+  // When the canvas gets a size (first time it is shown, or when it is resized):
   new ResizeObserver(() => {
     if (needsFit) fitView();
     else render();
   }).observe(canvasBox);
+
+  // When the whole panel changes width: switch between full buttons and icon-only buttons.
+  new ResizeObserver(() => {
+    appBox.classList.toggle('compact', appBox.clientWidth < COMPACT_BELOW_PX);
+    closePalette(); // its position would be wrong after a resize
+  }).observe(appBox);
 
   defaultHint();
   render();
@@ -952,6 +1312,15 @@
 
   // This lets us unit-test the layout code in Node. Joplin ignores it.
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { countLeaves, placeNode, graphToTree, relayoutRadial, treeToGraph, newMap };
+    module.exports = {
+      countLeaves,
+      placeNode,
+      graphToTree,
+      layoutRadial,
+      layoutHorizontal,
+      relayout,
+      treeToGraph,
+      newMap,
+    };
   }
 })();
