@@ -4,18 +4,23 @@
  * The "brains" of the Automatic Mind Map. This file has NO Joplin code in it,
  * so it can be tested with plain Node.
  *
- *   TF-IDF   -> decides WHICH words become nodes
- *   Kruskal  -> decides WHICH words connect to which (builds the tree)
- *   (Radial Tree Layout -> decides WHERE the nodes go. It lives in
+ *   TF-IDF   -> decides WHICH words (or phrases) become nodes
+ *   Kruskal  -> decides WHICH of them connect to which (builds the tree)
+ *   (The layout -> decides WHERE the nodes go. It lives in
  *    webview/mindmap.js because that is where the nodes get drawn.)
  *
  * Sections in this file:
  *   1. Types
- *   2. Reading text (stop words + tokenizer)
+ *   2. Reading text (stop words + tokenizer + getTerms)
  *   3. TF-IDF
  *   4. Kruskal
  *   5. buildMindMap  (glues 3 + 4 together)
  *   6. markdownToTree (alternative: build a map from headings and bullets)
+ *
+ * CHANGED after the ethnographic study:
+ *   - Added TermMode ('words' | 'phrases') and getTerms(), so the user can
+ *     choose between single-word nodes and two-word phrase nodes.
+ *   - extractKeywords() and buildMindMap() now take that mode.
  */
 
 /* ============================== 1. TYPES ================================== */
@@ -39,6 +44,13 @@ export interface Edge {
   v: number;
   w: number; // weight = distance (smaller = more closely related)
 }
+
+/**
+ * What the nodes of the automatic map are made of:
+ *   'words'   -> single words,   e.g. "photosynthesis"
+ *   'phrases' -> two-word pairs, e.g. "light energy"
+ */
+export type TermMode = 'words' | 'phrases';
 
 /* ====================== 2. READING TEXT (TOKENIZER) ======================= */
 
@@ -76,56 +88,90 @@ function isCandidate(word: string): boolean {
   return word.length >= 3 && !STOP_WORDS.has(word);
 }
 
+/**
+ * Turns text into a list of "terms" (the things that can become nodes).
+ *
+ *   'words'   -> every candidate word:      ["light", "energy", "plants"]
+ *   'phrases' -> every pair of candidate words that sit NEXT to each other
+ *                in the same sentence/clause: ["light energy"]
+ *
+ * A comma, period, colon, new line, etc. ends a clause, so a phrase never
+ * jumps across them. A stop word between two words also breaks the phrase
+ * (e.g. "energy of plants" gives no phrase, because "of" is a stop word).
+ */
+export function getTerms(text: string, mode: TermMode): string[] {
+  if (mode === 'words') {
+    return tokenize(text).filter(isCandidate);
+  }
+
+  const phrases: string[] = [];
+  const clauses = text.split(/[\n.,!?;:()]+/); // cut the text into small pieces
+  for (const clause of clauses) {
+    const words = tokenize(clause);
+    for (let i = 0; i < words.length - 1; i++) {
+      if (isCandidate(words[i]) && isCandidate(words[i + 1])) {
+        phrases.push(words[i] + ' ' + words[i + 1]);
+      }
+    }
+  }
+  return phrases;
+}
+
 /* ============================== 3. TF-IDF ================================= */
 
 /**
  * TF-IDF from the proposal:
- *   TF    = (times the word appears in this note) / (total words in this note)
- *   IDF   = log(total notes / notes containing the word)
+ *   TF    = (times the term appears in this note) / (total terms in this note)
+ *   IDF   = log(total notes / notes containing the term)
  *   Score = TF x IDF
  *
- * A word scores high when it is frequent in THIS note but rare in your OTHER
- * notes, which makes it a good "topic" word.
+ * A term scores high when it is frequent in THIS note but rare in your OTHER
+ * notes, which makes it a good "topic" term.
+ *
+ * "Term" means a word or a phrase, depending on `mode`.
  *
  * Difference from the proposal's pseudocode: we count how many notes contain
- * each word ONCE up front, instead of re-reading every note for every word.
+ * each term ONCE up front, instead of re-reading every note for every term.
  * The scores are identical; it is just faster.
  */
 export function extractKeywords(
   currentNote: NoteLike,
   allNotes: NoteLike[],
-  topN: number
+  topN: number,
+  mode: TermMode = 'words'
 ): { word: string; score: number }[] {
-  const words = tokenize(currentNote.body).filter(isCandidate);
-  const totalWords = words.length;
-  if (totalWords === 0) return [];
+  const terms = getTerms(currentNote.body, mode);
+  const totalTerms = terms.length;
+  if (totalTerms === 0) return [];
 
   // The "documents" for IDF. The current note is always counted exactly once,
-  // so notesWithWord is never 0 (which would be a divide-by-zero).
-  const documents: Set<string>[] = [new Set(tokenize(currentNote.title + ' ' + currentNote.body))];
+  // so notesWithTerm is never 0 (which would be a divide-by-zero).
+  const documents: Set<string>[] = [
+    new Set(getTerms(currentNote.title + ' ' + currentNote.body, mode)),
+  ];
   for (const note of allNotes) {
     if (note.id === undefined || note.id !== currentNote.id) {
-      documents.push(new Set(tokenize(note.title + ' ' + note.body)));
+      documents.push(new Set(getTerms(note.title + ' ' + note.body, mode)));
     }
   }
   const totalNotes = documents.length;
 
-  // How many times does each word appear in the current note?
+  // How many times does each term appear in the current note?
   const counts = new Map<string, number>();
-  for (const word of words) {
-    counts.set(word, (counts.get(word) || 0) + 1);
+  for (const term of terms) {
+    counts.set(term, (counts.get(term) || 0) + 1);
   }
 
-  // Score every unique word.
+  // Score every unique term.
   let scores: { word: string; score: number }[] = [];
-  counts.forEach((count, word) => {
-    const tf = count / totalWords;
-    let notesWithWord = 0;
+  counts.forEach((count, term) => {
+    const tf = count / totalTerms;
+    let notesWithTerm = 0;
     for (const doc of documents) {
-      if (doc.has(word)) notesWithWord++;
+      if (doc.has(term)) notesWithTerm++;
     }
-    const idf = Math.log(totalNotes / notesWithWord);
-    scores.push({ word, score: tf * idf });
+    const idf = Math.log(totalNotes / notesWithTerm);
+    scores.push({ word: term, score: tf * idf });
   });
 
   // If you only have one note, every IDF is log(1) = 0, so every score is 0.
@@ -134,12 +180,14 @@ export function extractKeywords(
   if (bestScore === 0) {
     scores = scores.map((s) => ({
       word: s.word,
-      score: (counts.get(s.word) as number) / totalWords,
+      score: (counts.get(s.word) as number) / totalTerms,
     }));
   }
 
-  // Highest score first. Ties are sorted alphabetically so results are stable.
-  scores.sort((a, b) => b.score - a.score || a.word.localeCompare(b.word));
+  // Highest score first. JavaScript's sort keeps equal scores in the order the
+  // terms first appeared in the note, so ties are stable AND follow the note
+  // (we used to sort ties alphabetically, which looked random for phrases).
+  scores.sort((a, b) => b.score - a.score);
   return scores.slice(0, topN);
 }
 
@@ -207,18 +255,31 @@ function euclideanDistance(a: number[], b: number[]): number {
  * TF-IDF -> graph -> Kruskal -> tree.
  *
  * How "distance" works: notes do not have x/y coordinates, so we give every
- * keyword a list of 0s and 1s: "does this word appear in sentence 1? 2? 3?...".
- * Words that are used in the same sentences get similar lists = small distance.
- * The note title gets all 1s, so words used all over the note end up near it.
+ * keyword a list of 0s and 1s: "does this keyword appear in sentence 1? 2? 3?...".
+ * Keywords that are used in the same sentences get similar lists = small distance.
+ * The note title gets all 1s, so keywords used all over the note end up near it.
+ *
+ * `mode` chooses single words or two-word phrases for the nodes. If the note
+ * has no phrases at all (for example it is only a list of single words), we
+ * quietly fall back to single words so the user still gets a map.
  */
-export function buildMindMap(note: NoteLike, allNotes: NoteLike[], topN = 12): MMNode {
+export function buildMindMap(
+  note: NoteLike,
+  allNotes: NoteLike[],
+  topN = 12,
+  mode: TermMode = 'words'
+): MMNode {
   const root: MMNode = { text: note.title || 'Untitled', children: [] };
 
-  const keywords = extractKeywords(note, allNotes, topN).map((k) => k.word);
+  let keywords = extractKeywords(note, allNotes, topN, mode).map((k) => k.word);
+  if (keywords.length === 0 && mode === 'phrases') {
+    mode = 'words'; // fallback described above
+    keywords = extractKeywords(note, allNotes, topN, mode).map((k) => k.word);
+  }
   if (keywords.length === 0) return root;
 
-  // Split the note into sentences/lines and list the words in each one.
-  const sentences = note.body.split(/[\n.!?;]+/).map((s) => new Set(tokenize(s)));
+  // Split the note into sentences/lines and list the terms in each one.
+  const sentences = note.body.split(/[\n.!?;]+/).map((s) => new Set(getTerms(s, mode)));
 
   // vectors[0] is the root (title). vectors[1..] are the keywords.
   const vectors: number[][] = [sentences.map(() => 1)];

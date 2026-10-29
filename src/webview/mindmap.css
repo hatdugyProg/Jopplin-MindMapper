@@ -4,47 +4,24 @@
  * The layout is a "flexbox column":
  *
  *     +---------------------------+
- *     | header   (colored band)   |
- *     | toolbar  (one row)        |
- *     | format   (one row)        |
+ *     | header   (fixed height)   |
+ *     | toolbar  (fixed height)   |
  *     | canvas   (takes ALL the   |   <- flex: 1
  *     |           leftover space) |
  *     | footer   (fixed height)   |
  *     +---------------------------+
  *
- * Sections:
- *   1. Colors (the palette lives here, in one place)
- *   2. The panel and its border
- *   3. Header, toolbars, footer
- *   4. Buttons and inputs
- *   5. Narrow ("compact") mode
- *   6. Color popup
- *   7. The drawing
- *
  * Colors use Joplin's theme variables (--joplin-...), so light and dark themes
  * both work. The value after the comma is the fallback if the variable is missing.
+ *
+ * CHANGED after the ethnographic study:
+ *   - .mm-shape no longer forces a border color. The border color now comes
+ *     from the node itself (the "Border" picker). Only the orange "selected"
+ *     and "connect-source" rules below still override it.
+ *   - The three color pickers share the same size.
  * ========================================================================== */
 
-/* 1. COLORS ------------------------------------------------------------------
-   Change a color here and it changes everywhere. */
-#mm-app {
-  --mm-accent: #0b7285; /* teal: the border and header, so the popup stands out from the note */
-  --mm-accent-dark: #095c6b;
-  --mm-select: #e8590c; /* orange: the selected node or line */
-  --mm-focus: #1c7ed6; /* blue: keyboard focus ring */
-  --mm-bar-bg: var(--joplin-background-color, #fff);
-  --mm-canvas-bg: var(--joplin-background-color3, #f1f3f5); /* different from the note, so you can tell them apart */
-  --mm-line: var(--joplin-divider-color, #ccc);
-}
-
-/* Elements with the "hidden" attribute must really disappear, even if a rule below says display:flex. */
-#mm-app [hidden] {
-  display: none !important;
-}
-
-/* 2. THE PANEL AND ITS BORDER ------------------------------------------------ */
-
-/* Make the panel fill all the space Joplin gives it. */
+/* 1. Make the panel fill all the space Joplin gives it. */
 html,
 body,
 #joplin-plugin-content {
@@ -54,100 +31,68 @@ body,
   overflow: hidden;
 }
 
+/* 2. The column. 100vh = "the full height of the panel". */
 #mm-app {
-  position: relative; /* so the color popup can be placed inside it */
   display: flex;
   flex-direction: column;
-  width: 100%;
-  min-width: 0; /* lets the panel shrink when Joplin's window is small */
   height: 100vh;
   box-sizing: border-box;
-  /* The border is what separates the mind map from the note: a thin line all
-     around and a thick one on the left, where it touches the note. */
-  border: 1px solid var(--mm-accent);
-  border-left: 4px solid var(--mm-accent);
   font-family: var(--joplin-font-family, sans-serif);
   font-size: 13px;
   color: var(--joplin-color, #222);
-  background: var(--mm-bar-bg);
+  background: var(--joplin-background-color, #fff);
 }
 
-/* 3. HEADER, TOOLBARS, FOOTER ------------------------------------------------ */
+/* 3. The fixed-height rows (they never grow or shrink). */
+#mm-header,
+#mm-toolbar,
+#mm-footer {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border-color: var(--joplin-divider-color, #ccc);
+}
 
 #mm-header {
-  flex: 0 0 auto;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 4px 8px;
-  background: var(--mm-accent);
-  color: #fff;
+  border-bottom: 1px solid var(--joplin-divider-color, #ccc);
 }
 
-/* A toolbar row. It never wraps: if the panel is narrow you scroll sideways
-   instead of the toolbar eating the whole height. */
-.mm-bar {
-  flex: 0 0 auto;
+/* wrap = if the panel is narrow, buttons move to the next line */
+#mm-toolbar {
   display: flex;
-  flex-wrap: nowrap;
-  align-items: center;
-  gap: 4px 10px;
-  padding: 5px 8px;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: thin;
-  background: var(--mm-bar-bg);
-  border-bottom: 1px solid var(--mm-line);
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  border-bottom: 1px solid var(--joplin-divider-color, #ccc);
 }
 
-/* A group of related buttons, with a thin line between groups. */
 .mm-group {
-  flex: 0 0 auto; /* groups keep their size; the bar scrolls instead */
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 4px;
-  padding-right: 10px;
-  border-right: 1px solid var(--mm-line);
-}
-
-.mm-group:last-child {
-  padding-right: 0;
-  border-right: none;
 }
 
 #mm-footer {
-  flex: 0 0 auto;
   display: flex;
   justify-content: space-between;
   gap: 8px;
-  padding: 3px 8px;
-  border-top: 1px solid var(--mm-line);
+  border-top: 1px solid var(--joplin-divider-color, #ccc);
   font-size: 12px;
   opacity: 0.85;
 }
 
-#mm-hint {
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis; /* a long hint is cut with "..." instead of pushing the status away */
-}
-
-#mm-status {
-  flex: 0 0 auto;
-}
-
-/* The canvas takes all leftover space.
-   min-height: 0 is the magic line that lets a flex child shrink
-   instead of pushing the footer out of view. */
+/* 4. The canvas takes all leftover space.
+      min-height: 0 is the magic line that lets a flex child shrink
+      instead of pushing the footer out of view. */
 #mm-canvas {
   flex: 1 1 auto;
   min-height: 0;
   position: relative; /* so the rename box can be placed on top of it */
   overflow: hidden; /* we pan and zoom ourselves instead of scrolling */
   outline: none;
-  background-color: var(--mm-canvas-bg);
-  background-image: radial-gradient(var(--mm-line) 1px, transparent 1px);
+  background-image: radial-gradient(var(--joplin-divider-color, #ccc) 1px, transparent 1px);
   background-size: 24px 24px;
 }
 
@@ -162,26 +107,17 @@ body,
   touch-action: none; /* lets us handle dragging ourselves */
 }
 
-/* 4. BUTTONS AND INPUTS ------------------------------------------------------ */
-
-#mm-app button,
-#mm-app select,
-#mm-app input[type='number'],
-#mm-app input[type='text'] {
-  font: inherit;
-  color: inherit;
-  padding: 3px 8px;
-  border: 1px solid var(--mm-line);
-  border-radius: 4px;
-  background: var(--joplin-background-color3, #f0f0f0);
-  box-sizing: border-box;
-  white-space: nowrap;
-}
+/* ------------------------------ buttons -------------------------------- */
 
 #mm-app button,
 #mm-app select {
+  font: inherit;
+  color: inherit;
+  padding: 3px 8px;
+  border: 1px solid var(--joplin-divider-color, #bbb);
+  border-radius: 4px;
+  background: var(--joplin-background-color3, #f0f0f0);
   cursor: pointer;
-  min-height: 28px; /* a comfortable size to click */
 }
 
 #mm-app button:hover:not(:disabled) {
@@ -195,211 +131,92 @@ body,
   cursor: default;
 }
 
-/* "On" state: Connect mode, Bold, Italic. */
 #mm-app button.active {
-  background: var(--mm-accent);
-  border-color: var(--mm-accent);
+  background: #e8590c;
+  border-color: #e8590c;
   color: #fff;
 }
 
 #mm-app button:focus-visible,
 #mm-app select:focus-visible,
 #mm-app input:focus-visible {
-  outline: 2px solid var(--mm-focus);
+  outline: 2px solid #1c7ed6;
   outline-offset: 1px;
 }
 
-/* The header close button sits on the colored band, so it needs its own look.
-   (Two ids make this rule win over the general button rule above.) */
-#mm-app #mm-header button {
-  min-height: 0;
-  padding: 1px 8px;
-  background: transparent;
-  border-color: rgba(255, 255, 255, 0.6);
-  color: #fff;
-}
-
-#mm-app #mm-header button:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.22);
-}
-
-.mm-icon {
-  display: inline-block;
-  min-width: 1em;
-  text-align: center;
-}
-
-.mm-label {
-  margin-left: 4px;
-}
-
-#mm-font {
-  width: 130px;
-}
-
-#mm-font-size {
-  width: 52px;
-  text-align: center;
-}
-
-/* Text color button: a big "A" with a colored bar under it (like Canva). */
-.mm-text-icon {
-  display: block;
-  font-weight: bold;
-  line-height: 1;
-}
-
-.mm-colorbar {
-  display: block;
-  height: 4px;
-  margin-top: 2px;
-  border-radius: 2px;
-  background: #1a1a1a; /* mindmap.js sets the real color */
-}
-
-/* Fill color button: a small square showing the current fill. */
-.mm-fill-preview {
-  display: block;
-  width: 18px;
-  height: 18px;
-  border: 1px solid rgba(0, 0, 0, 0.45);
-  border-radius: 4px;
-  background: #dbe7ff; /* mindmap.js sets the real color */
-}
-
-/* 5. NARROW ("COMPACT") MODE --------------------------------------------------
-   mindmap.js adds the class "compact" to #mm-app when the panel is narrow.
-   Buttons then show only their icon, so more of them fit on screen. */
-#mm-app.compact .mm-label {
-  display: none;
-}
-
-#mm-app.compact #mm-hint {
-  display: none; /* the status message is more important than the hint */
-}
-
-#mm-app.compact .mm-bar {
-  gap: 4px 6px;
-  padding: 4px 6px;
-}
-
-#mm-app.compact .mm-group {
-  padding-right: 6px;
-}
-
-/* 6. COLOR POPUP ------------------------------------------------------------- */
-
-#mm-palette {
-  position: absolute; /* mindmap.js sets left and top */
-  z-index: 20;
-  width: 196px;
-  box-sizing: border-box;
-  padding: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  background: var(--mm-bar-bg);
-  border: 1px solid var(--mm-accent);
-  border-radius: 6px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
-}
-
-#mm-palette-title {
-  font-weight: bold;
-}
-
-#mm-swatches {
-  display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  gap: 6px;
-}
-
-#mm-app .mm-swatch {
-  width: 24px;
-  height: 24px;
-  min-height: 0;
-  padding: 0;
-  border: 1px solid rgba(0, 0, 0, 0.4);
-  border-radius: 50%;
-}
-
-#mm-app .mm-swatch.current {
-  outline: 2px solid var(--mm-accent);
-  outline-offset: 1px;
-}
-
-#mm-palette label {
+.mm-group label {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 
-#mm-hex {
-  flex: 1 1 auto;
-  min-width: 0;
+/* The three color pickers: Fill, Text and Border. */
+#mm-color,
+#mm-text-color,
+#mm-border-color {
+  width: 34px;
+  height: 24px;
+  padding: 0;
 }
 
-/* 7. THE DRAWING -------------------------------------------------------------- */
+/* ----------------------------- the drawing ------------------------------ */
 
-/* Lines are curves (SVG paths). "fill: none" stops the browser from filling the curve in black. */
 .mm-edge {
-  fill: none;
   stroke: var(--joplin-color, #666);
   stroke-opacity: 0.55;
   stroke-width: 2;
 }
 
 .mm-edge.selected {
-  stroke: var(--mm-select);
+  stroke: #e8590c;
   stroke-opacity: 1;
   stroke-width: 3.5;
 }
 
 /* A fat invisible line on top of each edge so it is easy to click. */
 .mm-edge-hit {
-  fill: none;
   stroke: transparent;
   stroke-width: 14;
   pointer-events: stroke;
   cursor: pointer;
 }
 
+/* No "stroke:" here on purpose: the border color is set in mindmap.js
+   (node.borderColor). A CSS rule would always win over that. */
 .mm-shape {
-  stroke: #4a6fa5;
   stroke-width: 1.5;
   cursor: grab;
 }
 
+/* These two DO set a stroke: the orange outline shows which node is selected. */
 .mm-node.selected .mm-shape {
-  stroke: var(--mm-select);
+  stroke: #e8590c;
   stroke-width: 3.5;
 }
 
 .mm-node.connect-source .mm-shape {
-  stroke: var(--mm-select);
+  stroke: #e8590c;
   stroke-width: 3;
   stroke-dasharray: 6 4;
 }
 
-/* The font, size, weight and color of node text are set per node by mindmap.js,
-   so they are NOT written here (a rule here would override them). */
 .mm-text {
+  font-size: 14px;
   text-anchor: middle;
   dominant-baseline: central;
   pointer-events: none; /* clicks go to the shape underneath */
   user-select: none;
 }
 
-/* The text box that appears when you rename a node.
-   (The long selector makes it win over the general input rule in section 4.) */
-#mm-app input.mm-edit {
+/* The text box that appears when you rename a node. */
+.mm-edit {
   position: absolute;
   z-index: 5;
   box-sizing: border-box;
   text-align: center;
   color: #111;
   background: #fff;
-  border: 2px solid var(--mm-select);
+  border: 2px solid #e8590c;
   border-radius: 6px;
   outline: none;
 }
