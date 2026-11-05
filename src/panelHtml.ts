@@ -5,13 +5,6 @@
  * The behaviour of each button lives in webview/mindmap.js, which finds
  * the buttons by their  data-action="..."  or  id="..."  attributes.
  * Styling lives in webview/mindmap.css.
- *
- * CHANGED after the ethnographic study:
- *   - Three separate color pickers: Fill, Text and Border (before, one picker
- *     changed things the user did not expect).
- *   - "Nodes" select (Words / Phrases) for the Auto button.
- *   - "Layout" select (Sideways tree / Radial).
- *   - The Connect button explains that it draws ONE line, then turns off.
  */
 export const PANEL_HTML = `
 <div id="mm-app">
@@ -32,14 +25,14 @@ export const PANEL_HTML = `
 
     <div class="mm-group">
       <button data-action="add-child" title="Add a connected child to the selected node (Tab)">＋ Child</button>
-      <button id="mm-connect" data-action="toggle-connect" title="Draw ONE line: click a box, then the box to join it to. It turns itself off afterwards.">⤳ Connect (1 line)</button>
-      <button id="mm-delete" data-action="delete" title="Delete the selected node or line (Delete key)">🗑 Delete</button>
+      <button id="mm-connect" data-action="toggle-connect" title="Click two nodes to draw a line between them">⤳ Connect</button>
+      <button id="mm-delete" data-action="delete" title="Delete the selected nodes or line (Delete key)">🗑 Delete</button>
     </div>
 
     <div class="mm-group">
-      <label title="Color inside the shape">Fill <input type="color" id="mm-color" value="#dbe7ff"></label>
-      <label title="Color of the text">Text <input type="color" id="mm-text-color" value="#1a1a1a"></label>
-      <label title="Color of the outline">Border <input type="color" id="mm-border-color" value="#4a6fa5"></label>
+      <label title="Background color of the selected node(s)">Fill <input type="color" id="mm-fill" value="#dbe7ff"></label>
+      <label title="Text color of the selected node(s)">Text <input type="color" id="mm-text-color" value="#1a1a1a"></label>
+      <label title="Border color of the selected node(s)">Border <input type="color" id="mm-border" value="#4a6fa5"></label>
       <label>Shape
         <select id="mm-shape">
           <option value="rect">Box</option>
@@ -51,24 +44,9 @@ export const PANEL_HTML = `
     </div>
 
     <div class="mm-group">
-      <label title="What the Auto button puts inside the nodes">Nodes
-        <select id="mm-term-mode">
-          <option value="words">Words</option>
-          <option value="phrases">Phrases</option>
-        </select>
-      </label>
-      <button data-action="auto" title="Build a map from this note's keywords (TF-IDF + Kruskal + layout)">✨ Auto (TF-IDF)</button>
+      <button data-action="auto" title="Build a map from this note's key phrases (TF-IDF + Kruskal + sideways tree layout)">✨ Auto (TF-IDF)</button>
       <button data-action="outline" title="Build a map from this note's headings and bullet points">📄 From outline</button>
-    </div>
-
-    <div class="mm-group">
-      <label title="How connected nodes are arranged">Layout
-        <select id="mm-layout">
-          <option value="tree">Sideways tree</option>
-          <option value="radial">Radial</option>
-        </select>
-      </label>
-      <button data-action="relayout" title="Re-arrange all connected nodes using the chosen layout">◎ Re-arrange</button>
+      <button data-action="relayout" title="Re-arrange all connected nodes in a sideways tree">☰ Re-arrange</button>
     </div>
 
     <div class="mm-group">

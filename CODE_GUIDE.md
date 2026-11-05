@@ -5,10 +5,10 @@
 | File | Runs where | What it does | Edit it when you want to... |
 |---|---|---|---|
 | `src/index.ts` | Joplin side | Creates the panel, toolbar button, menu item, shortcut. Answers the panel's messages (load, save, auto, outline, close). | add a Joplin feature (settings, text-to-speech, etc.) |
-| `src/panelHtml.ts` | Panel (markup) | The header, the two toolbar rows (tools + format bar), the drawing area, the color popup. | add or remove a button |
-| `src/webview/mindmap.js` | Panel (behaviour) | The editor: drawing, dragging, renaming, connecting, undo, layouts, format bar, color popup. | change how the editor behaves |
-| `src/webview/mindmap.css` | Panel (looks) | Colors, border, sizes, flexbox layout, compact mode. | change how it looks |
-| `src/algorithms.ts` | Joplin side | TF-IDF, Kruskal, building the auto map, outline parser. | change the auto mind map |
+| `src/panelHtml.ts` | Panel (markup) | The buttons, color pickers and the drawing area. | add or remove a button |
+| `src/webview/mindmap.js` | Panel (behaviour) | The editor: drawing, dragging, selecting many nodes, renaming, connecting, colors, undo, Sideways Tree Layout. | change how the editor behaves |
+| `src/webview/mindmap.css` | Panel (looks) | Colors, borders, sizes, flexbox layout. | change how it looks |
+| `src/algorithms.ts` | Joplin side | TF-IDF (words and phrases), Kruskal, building the auto map, outline parser. | change the auto mind map |
 
 ## How the two halves talk
 
@@ -26,31 +26,49 @@ To add a feature that needs Joplin (for example text-to-speech reading the note)
 
 ## The three algorithms
 
-1. **TF-IDF** (`extractKeywords` in `algorithms.ts`): picks the keywords.
+1. **TF-IDF** (`scoreWords`, `extractPhrases` in `algorithms.ts`): picks the key phrases (2-3 words).
+   (`extractKeywords` gives single words and is only a backup for notes that have no phrases.)
 2. **Kruskal** (`kruskal` in `algorithms.ts`): connects the keywords into a tree.
-3. **Tree layout** (`mindmap.js`, section 4): positions the nodes. There are two layouts:
-   - **Sideways tree** (`layoutHorizontal`, the default): root on the left, one column per level.
-   - **Radial Tree Layout** (`countLeaves` and `placeNode`): root in the centre, branches in circles.
-
-   `relayout(graph)` picks the right one using `graph.layout` (`'horizontal'` or `'radial'`).
+3. **Sideways Tree Layout** (`placeNode` and `relayoutTree` in `mindmap.js`, section 4): positions the nodes.
+   One column per level, one row per end node, parents centered next to their children.
 
 Pipeline when you press **Auto (TF-IDF)**:
-`TF-IDF -> Kruskal -> tree -> layout (sideways or radial) -> boxes on screen`
+`TF-IDF -> Kruskal -> tree -> Sideways Tree Layout -> boxes on screen`
+
+There are only two ways to generate a map: **Auto (TF-IDF)** (phrases from the text) and
+**From outline** (uses your headings and bullets, see `markdownToTree` in `algorithms.ts`).
+
+(The old Radial Tree Layout and the Words/Phrases dropdown have been removed.)
+
+## Controls
+
+| Action | How |
+|---|---|
+| Select one node | click it |
+| Select many nodes | click and hold on empty space, drag the blue rectangle over them |
+| Add / remove one node from the selection | Shift or Ctrl + click |
+| Select everything | Ctrl + A |
+| Move selected nodes | drag any selected node (they all move together) |
+| Move the whole map (pan) | hold **Spacebar** and drag (mouse wheel also works) |
+| Rename | double-click a node (or Enter / F2) |
+| Change colors | select node(s), then use **Fill**, **Text**, **Border** in the toolbar |
+
+## How colors are stored
+
+Every node has three colors: `fill`, `textColor` and `borderColor`.
+`textColor: null` means "automatic" (black or white, whichever is readable on the fill).
+
+Important rule: do NOT put `fill` or `stroke` colors in `mindmap.css` for `.mm-shape`.
+CSS beats the colors set in `mindmap.js`, so the color pickers would silently stop working.
+(The orange outline of a selected node is a separate shape, `.mm-halo`, for the same reason.)
+
+Maps saved with the old single `color` are converted automatically (`normalizeGraph`).
 
 ## The golden rule of mindmap.js: state -> render
 
 - The variables in section 2 ("STATE") describe everything on screen.
 - `render()` draws the screen from them.
 - Changes the user can undo go through `change(() => { ... })`.
-- To change one property of the selected node (font, color, size...) use `setNodeProp('property', value)`. It does the undo and the save for you.
-
-## Common small edits
-
-- **Add a font:** add one line to `FONT_CHOICES` at the top of `mindmap.js`.
-- **Add a node size:** add one line to `SIZE_CHOICES`.
-- **Change the color swatches:** edit `FILL_COLORS` and `TEXT_COLORS`.
-- **Change the popup's border/header color:** edit `--mm-accent` at the top of `mindmap.css`.
-- **Change when the toolbar switches to icons only:** edit `COMPACT_BELOW_PX` in `mindmap.js`.
 
 ## Formatting
 
