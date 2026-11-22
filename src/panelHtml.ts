@@ -11,7 +11,11 @@ export const PANEL_HTML = `
 
   <div id="mm-header">
     <strong>Mind Map</strong>
-    <button data-action="close" aria-label="Close mind map" title="Close (Ctrl+Alt+M)">✕</button>
+    <!-- NEW: the Help button sits next to the close button -->
+    <span>
+      <button data-action="help" aria-label="Open the help tutorial" title="How to use Mind Map">? Help</button>
+      <button data-action="close" aria-label="Close mind map" title="Close (Ctrl+Alt+M)">✕</button>
+    </span>
   </div>
 
   <div id="mm-toolbar">
@@ -71,6 +75,56 @@ export const PANEL_HTML = `
   <div id="mm-footer">
     <span id="mm-hint"></span>
     <span id="mm-status"></span>
+  </div>
+
+  <!-- NEW: the help tutorial. It is hidden until the Help button is pressed.
+       To change the tutorial, just edit the text inside the <li> items. -->
+  <div id="mm-help" hidden role="dialog" aria-modal="true" aria-labelledby="mm-help-title">
+    <div id="mm-help-card">
+      <div id="mm-help-top">
+        <strong id="mm-help-title">How to use Mind Map</strong>
+        <button data-action="close-help" aria-label="Close help">✕</button>
+      </div>
+
+      <ol id="mm-help-steps">
+        <li>
+          <strong>Start from your note.</strong>
+          Open a note, then press <em>✨ Auto (TF-IDF)</em> to build a map from its key phrases,
+          or <em>📄 From outline</em> to build one from its headings and bullet points.
+        </li>
+        <li>
+          <strong>Add your own ideas.</strong>
+          Press a shape button (Box, Rounded, Oval, Diamond) or double-click empty space.
+          Select a node and press <em>＋ Child</em> (or the Tab key) to add a connected idea.
+        </li>
+        <li>
+          <strong>Rename a node.</strong>
+          Double-click it (or select it and press Enter), type the new text,
+          then press Enter to save or Esc to cancel.
+        </li>
+        <li>
+          <strong>Connect nodes.</strong>
+          Press <em>⤳ Connect</em>, click the first node, then the second node.
+          Press Esc to stop connecting. Click a line and press Delete to remove it.
+        </li>
+        <li>
+          <strong>Select, style and move.</strong>
+          Click and hold on empty space, then drag the blue box over several nodes to select them
+          (or Shift + click). Use <em>Fill</em>, <em>Text</em>, <em>Border</em> and <em>Shape</em>
+          to restyle them, and drag any selected node to move them all together.
+          Press <em>☰ Re-arrange</em> to tidy the layout.
+        </li>
+        <li>
+          <strong>Move around the map.</strong>
+          Hold the Spacebar and drag to move the whole map. Scroll to pan, Ctrl + scroll to zoom,
+          and press <em>⤢ Fit</em> to see everything.
+          Made a mistake? Use ↶ Undo (Ctrl+Z) and ↷ Redo (Ctrl+Y).
+        </li>
+      </ol>
+
+      <p id="mm-help-note">Your map is saved automatically with the note. Look for “Saved ✓” at the bottom.</p>
+      <button id="mm-help-close" data-action="close-help">Got it!</button>
+    </div>
   </div>
 
 </div>

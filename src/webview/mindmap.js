@@ -104,6 +104,7 @@
   const redoButton = byId('mm-redo');
   const hintBox = byId('mm-hint');
   const statusBox = byId('mm-status');
+  const helpBox = byId('mm-help'); // NEW: the help tutorial overlay (hidden at first)
 
   /* ========================= 3. SMALL HELPERS ============================== */
 
@@ -743,6 +744,16 @@
     fitView();
   }
 
+  /** NEW: shows the help tutorial if it is hidden, hides it if it is showing. */
+  function toggleHelp() {
+    helpBox.hidden = !helpBox.hidden;
+    if (helpBox.hidden) {
+      canvasBox.focus(); // give the keyboard back to the map
+    } else {
+      byId('mm-help-close').focus(); // so keyboard users land inside the tutorial
+    }
+  }
+
   /** Shows a text box over a node so the user can rename it. */
   function startEditing(nodeId) {
     const node = findNode(nodeId);
@@ -803,6 +814,8 @@
     auto: () => generateFromNote('auto'),
     outline: () => generateFromNote('outline'),
     relayout: () => rearrange(),
+    help: () => toggleHelp(), // NEW: the "? Help" button
+    'close-help': () => toggleHelp(), // NEW: the "Got it!" and ✕ buttons inside the tutorial
     undo: () => undo(),
     redo: () => redo(),
     'zoom-in': () => zoomAt(svg.clientWidth / 2, svg.clientHeight / 2, 1.25),
@@ -1031,6 +1044,13 @@
     const tag = event.target.tagName;
     if (tag === 'INPUT' || tag === 'SELECT') return; // the user is typing or choosing something
     const ctrl = event.ctrlKey || event.metaKey;
+
+    // NEW: while the help is open, only Esc works (it closes the help). The map
+    // shortcuts (Delete, Tab, ...) are ignored so nothing is changed by accident.
+    if (!helpBox.hidden) {
+      if (event.key === 'Escape') toggleHelp();
+      return;
+    }
 
     if (event.key === ' ') {
       event.preventDefault(); // stop the page from scrolling

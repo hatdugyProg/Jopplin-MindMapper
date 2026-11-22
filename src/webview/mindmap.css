@@ -31,6 +31,7 @@ body,
 #mm-app {
   display: flex;
   flex-direction: column;
+  position: relative; /* NEW: so the help overlay can cover the whole panel */
   height: 100vh;
   box-sizing: border-box;
   border: 3px solid #4a6fa5;
@@ -233,4 +234,60 @@ body,
   border: 2px solid #e8590c;
   border-radius: 6px;
   outline: none;
+}
+
+/* ------------------------------- help ---------------------------------- */
+
+/* NEW: the dark background that covers the whole panel. It can scroll if the
+   panel is small, so the tutorial is readable even in a narrow window. */
+#mm-help {
+  position: absolute;
+  inset: 0; /* top, right, bottom and left all 0 = cover everything */
+  z-index: 20;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 12px;
+  overflow: auto;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+/* "display: flex" above would beat the hidden attribute, so we say it again. */
+#mm-help[hidden] {
+  display: none;
+}
+
+/* The tutorial card (colors follow the Joplin theme). */
+#mm-help-card {
+  max-width: 460px;
+  padding: 12px 16px;
+  box-sizing: border-box;
+  border: 2px solid #e8590c;
+  border-radius: 8px;
+  background: var(--joplin-background-color, #fff);
+  color: var(--joplin-color, #222);
+}
+
+#mm-help-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 15px;
+  margin-bottom: 8px;
+}
+
+#mm-help-steps {
+  margin: 0;
+  padding-left: 20px;
+  line-height: 1.5;
+}
+
+#mm-help-steps li {
+  margin-bottom: 8px;
+}
+
+#mm-help-note {
+  margin: 8px 0;
+  font-size: 12px;
+  opacity: 0.85;
 }
