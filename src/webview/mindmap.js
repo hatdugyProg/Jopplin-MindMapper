@@ -13,15 +13,15 @@
  *
  *   {
  *     rootId: 'n1',                                  <- the centre of the map
- *     nodes: [ { id, text, x, y, shape, color,       <- the boxes
- *                textColor, borderColor } ],
+ *     nodes: [ { id, text, x, y, shape,
+ *                fill, textColor, borderColor } ],   <- the boxes
  *     edges: [ { id, from, to } ]                    <- the lines between boxes
  *   }
  *
  * shape is 'rect' | 'round' | 'ellipse' | 'diamond'.
- * color is the FILL (inside) color. textColor and borderColor are optional:
- * old saved maps do not have them, so we use default colors when they are missing.
  * x and y are positions on an infinite canvas ("world" coordinates).
+ * fill / textColor / borderColor are colors like '#dbe7ff'.
+ * textColor can be null, which means "pick black or white automatically".
  *
  * THE BASIC IDEA  (state -> render)
  *   - The variables in section 2 describe everything on screen.
@@ -29,19 +29,19 @@
  *   - To change something: change the variables, then call render().
  *   - For edits the user may want to undo, use change(() => { ... }) (section 6).
  *
+ * MOUSE CONTROLS
+ *   - Click a node ............ select it
+ *   - Click + hold on empty ... draw a blue box; every node it touches is selected
+ *   - Shift/Ctrl + click ...... add a node to (or remove it from) the selection
+ *   - Drag a selected node .... moves ALL selected nodes together
+ *   - Hold SPACEBAR + drag .... moves the whole map around (pan)
+ *
  * SECTIONS
  *   1. Settings            6. Editing actions
  *   2. State               7. Mouse and keyboard
  *   3. Small helpers       8. Talking to Joplin (load / save / auto)
- *   4. Layouts             9. Start-up
+ *   4. Sideways Tree Layout  9. Start-up
  *   5. Drawing (render)
- *
- * CHANGED after the ethnographic study:
- *   - Fill, Text and Border colors are now three separate things (fixes the
- *     "fill color changes the border and text" bug).
- *   - New sideways tree layout (default). The radial layout is still available.
- *   - Connect mode turns itself off after one line is drawn.
- *   - "Nodes: Words / Phrases" choice is sent along with the Auto request.
  * ========================================================================== */
 
 (function () {
@@ -51,9 +51,8 @@
   /* Change these numbers to tweak the look and feel. */
 
   const SVG_NS = 'http://www.w3.org/2000/svg';
-  const RING_GAP = 200; // radial layout: distance between circles
-  const COLUMN_GAP = 300; // sideways tree: distance between levels (left to right)
-  const ROW_GAP = 70; // sideways tree: distance between neighbours (top to bottom)
+  const LEVEL_GAP = 340; // sideways layout: distance between one column and the next
+  const ROW_GAP = 80; // sideways layout: distance between one row and the next
   const NODE_HEIGHT = 44;
   const MIN_NODE_WIDTH = 110;
   const MAX_NODE_WIDTH = 260;
@@ -62,20 +61,22 @@
   const MAX_ZOOM = 3;
   const SAVE_DELAY_MS = 1000; // auto-save this long after the last change
   const MAX_UNDO_STEPS = 50;
-  const ROOT_COLOR = '#ffe9a8'; // fill of the centre node
-  const DEFAULT_COLOR = '#dbe7ff'; // fill of every other node
-  const DEFAULT_TEXT_COLOR = '#1a1a1a'; // text of every node (dark, so it reads on light fills)
-  const DEFAULT_BORDER_COLOR = '#4a6fa5'; // outline of every node
+  const ROOT_FILL = '#ffe9a8';
+  const DEFAULT_FILL = '#dbe7ff';
+  const DEFAULT_BORDER = '#4a6fa5';
 
   /* ============================ 2. STATE =================================== */
 
   let graph = { nodes: [], edges: [], rootId: null }; // the map itself
   let view = { x: 0, y: 0, zoom: 1 }; // where the camera is looking
-  let selection = { type: null, id: null }; // type: 'node' | 'edge' | null
+  // What is selected? Many nodes can be selected at once (a Set of node ids),
+  // OR one line (edgeId). Never both.
+  let selection = { nodeIds: new Set(), edgeId: null };
   let connectMode = false; // is the Connect tool on?
   let connectSourceId = null; // first node clicked in Connect mode
-  let layoutMode = 'tree'; // 'tree' (sideways) or 'radial'
   let drag = null; // info about the drag in progress (if any)
+  let spaceDown = false; // is the Spacebar being held? (then dragging = pan)
+  let colorEditing = false; // is a color picker being used right now?
   let lastClick = { time: 0, nodeId: null, x: 0, y: 0 }; // used to detect double-clicks
   let editInput = null; // the rename text box (if open)
   let currentNoteId = null; // which note this map belongs to
@@ -93,12 +94,10 @@
   const world = byId('mm-world');
   const edgeLayer = byId('mm-edges');
   const nodeLayer = byId('mm-nodes');
-  const colorInput = byId('mm-color'); // FILL color
+  const fillInput = byId('mm-fill');
   const textColorInput = byId('mm-text-color');
-  const borderColorInput = byId('mm-border-color');
+  const borderInput = byId('mm-border');
   const shapeSelect = byId('mm-shape');
-  const termModeSelect = byId('mm-term-mode'); // 'words' or 'phrases'
-  const layoutSelect = byId('mm-layout'); // 'tree' or 'radial'
   const connectButton = byId('mm-connect');
   const deleteButton = byId('mm-delete');
   const undoButton = byId('mm-undo');
@@ -117,16 +116,16 @@
     return Math.min(max, Math.max(min, value));
   }
 
-  function makeNode(text, x, y, shape, color) {
+  function makeNode(text, x, y, shape, fill) {
     return {
       id: newId(),
       text: text,
       x: x,
       y: y,
       shape: shape || 'round',
-      color: color || DEFAULT_COLOR, // fill
-      textColor: DEFAULT_TEXT_COLOR,
-      borderColor: DEFAULT_BORDER_COLOR,
+      fill: fill || DEFAULT_FILL,
+      textColor: null, // null = automatic (black or white, whichever is readable)
+      borderColor: DEFAULT_BORDER,
     };
   }
 
@@ -138,22 +137,48 @@
     return graph.nodes.find((node) => node.id === id);
   }
 
+  /* ---- Selection helpers ---- */
+
+  /** All the selected nodes, as a list. */
+  function selectedNodes() {
+    return graph.nodes.filter((node) => selection.nodeIds.has(node.id));
+  }
+
+  /** The selected node, but ONLY if exactly one node is selected (otherwise null). */
   function selectedNode() {
-    return selection.type === 'node' ? findNode(selection.id) : null;
+    const nodes = selectedNodes();
+    return nodes.length === 1 ? nodes[0] : null;
+  }
+
+  function hasSelection() {
+    return selection.nodeIds.size > 0 || selection.edgeId !== null;
+  }
+
+  function clearSelection() {
+    selection = { nodeIds: new Set(), edgeId: null };
+  }
+
+  function selectOnlyNode(id) {
+    selection = { nodeIds: new Set([id]), edgeId: null };
+  }
+
+  function selectEdge(id) {
+    selection = { nodeIds: new Set(), edgeId: id };
+  }
+
+  /** Shift/Ctrl + click: add the node to the selection, or remove it if it is already in. */
+  function toggleNodeInSelection(id) {
+    const ids = new Set(selection.nodeIds);
+    if (ids.has(id)) {
+      ids.delete(id);
+    } else {
+      ids.add(id);
+    }
+    selection = { nodeIds: ids, edgeId: null };
   }
 
   function edgeExists(a, b) {
     return graph.edges.some((e) => (e.from === a && e.to === b) || (e.from === b && e.to === a));
-  }
-
-  /** The text color of a node. Old saved maps have no textColor, so use the default. */
-  function getTextColor(node) {
-    return node.textColor || DEFAULT_TEXT_COLOR;
-  }
-
-  /** The border color of a node. Old saved maps have no borderColor, so use the default. */
-  function getBorderColor(node) {
-    return node.borderColor || DEFAULT_BORDER_COLOR;
   }
 
   /** How big a node is. It grows with its text, and depends on its shape. */
@@ -162,6 +187,15 @@
     if (node.shape === 'diamond') return { w: base * 1.4, h: NODE_HEIGHT * 1.6 };
     if (node.shape === 'ellipse') return { w: base * 1.15, h: NODE_HEIGHT * 1.2 };
     return { w: base, h: NODE_HEIGHT };
+  }
+
+  /** Dark text on light colors, white text on dark colors (readability). */
+  function textColorFor(hex) {
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    const brightness = 0.299 * r + 0.587 * g + 0.114 * b;
+    return brightness > 150 ? '#1a1a1a' : '#ffffff';
   }
 
   /** Creates an SVG element, e.g. svgEl('rect', { width: 10 }). */
@@ -198,6 +232,19 @@
       }
     }
     return null;
+  }
+
+  /** Which nodes touch this rectangle? box = { left, right, top, bottom } in canvas coordinates. */
+  function findNodesInBox(box) {
+    return graph.nodes.filter((node) => {
+      const size = getSize(node);
+      return (
+        node.x + size.w / 2 >= box.left &&
+        node.x - size.w / 2 <= box.right &&
+        node.y + size.h / 2 >= box.top &&
+        node.y - size.h / 2 <= box.bottom
+      );
+    });
   }
 
   /** Finds an empty spot near a point, so a new shape never lands on top of another one. */
@@ -243,77 +290,48 @@
   }
 
   function defaultHint() {
-    setHint('Double-click to rename · drag to move · scroll to pan · Ctrl+scroll to zoom');
+    setHint('Drag empty space: select many · Space + drag: move map · Double-click: rename');
   }
 
-  /* ============================ 4. LAYOUTS ================================= */
-  /* A layout decides WHERE every node goes. There are two:
-       - Sideways tree (default): the centre node is on the left, and each level
-         is a column to the right of the one before. Easy to read top to bottom.
-       - Radial tree: the centre node is in the middle, levels are circles.
-     Both start from the same thing: graphToTree() turns the boxes and lines
-     into a tree, then a "place" function gives every tree node an x and y. */
-
-  const CENTER_X = 0;
-  const CENTER_Y = 0;
-
-  /** How many "end" nodes (nodes without children) are below this node? */
-  function countLeaves(node) {
-    if (node.children.length === 0) {
-      return 1;
-    }
-    let total = 0;
-    for (const child of node.children) {
-      total += countLeaves(child);
-    }
-    return total;
+  /** Makes older saved maps work with the newest code.
+      Old nodes had ONE "color" (the fill). New nodes have fill, textColor and borderColor. */
+  function normalizeGraph(g) {
+    g.nodes.forEach((node) => {
+      if (node.fill === undefined) node.fill = node.color || DEFAULT_FILL;
+      if (node.textColor === undefined) node.textColor = null;
+      if (node.borderColor === undefined) node.borderColor = DEFAULT_BORDER;
+      delete node.color;
+    });
+    return g;
   }
 
-  /* ---- Radial layout ---- */
+  /* ==================== 4. SIDEWAYS TREE LAYOUT ============================ */
+  /* The root is on the LEFT and the branches grow to the RIGHT, like an
+     outline turned on its side. Two simple rules:
+       1. Column (x): every level of the tree gets its own column.
+          depth 0 = root, depth 1 = its children, depth 2 = their children, ...
+       2. Row (y): every "end" node (a node with no children) gets its own row,
+          one below the other. A parent is placed in the MIDDLE of its children.
+     That is all it takes to keep the map tidy: nothing overlaps. */
 
-  /** Places a node in the middle of its slice, then splits the slice among its children. */
-  function placeNode(node, startAngle, endAngle, depth) {
-    const middleAngle = (startAngle + endAngle) / 2;
-    const radius = depth * RING_GAP; // the root has depth 0, so it sits in the centre
-    node.x = CENTER_X + radius * Math.cos(middleAngle);
-    node.y = CENTER_Y + radius * Math.sin(middleAngle);
+  let nextRow = 0; // the next free row for an "end" node
 
-    if (node.children.length > 0) {
-      const leavesInNode = countLeaves(node);
-      let currentAngle = startAngle;
-      for (const child of node.children) {
-        const share = countLeaves(child) / leavesInNode;
-        const childEnd = currentAngle + (endAngle - startAngle) * share;
-        placeNode(child, currentAngle, childEnd, depth + 1);
-        currentAngle = childEnd;
-      }
-    }
-  }
-
-  /* ---- Sideways tree layout ---- */
-
-  /** Places a node in its column (x = depth), and in its row (y).
-      - An "end" node (no children) takes the next free row.
-      - A node with children sits in the middle of its first and last child.
-      `rows` is an object { next: 0 } that counts the rows already used. */
-  function placeTreeNode(node, depth, rows) {
-    node.x = CENTER_X + depth * COLUMN_GAP;
+  /** Places a node, and (before it) all of its children. */
+  function placeNode(node, depth) {
+    node.x = depth * LEVEL_GAP; // rule 1: the column
 
     if (node.children.length === 0) {
-      node.y = CENTER_Y + rows.next * ROW_GAP;
-      rows.next += 1;
-      return;
+      // An end node takes the next free row.
+      node.y = nextRow * ROW_GAP;
+      nextRow += 1;
+    } else {
+      // Place all the children first, then sit in the middle of them.
+      node.children.forEach((child) => placeNode(child, depth + 1));
+      const firstChild = node.children[0];
+      const lastChild = node.children[node.children.length - 1];
+      node.y = (firstChild.y + lastChild.y) / 2;
     }
-
-    for (const child of node.children) {
-      placeTreeNode(child, depth + 1, rows);
-    }
-    const firstChild = node.children[0];
-    const lastChild = node.children[node.children.length - 1];
-    node.y = (firstChild.y + lastChild.y) / 2;
   }
-
-  /* ---- Shared helpers ---- */
 
   /** Turns the graph (boxes + lines) into a tree, starting from the root. */
   function graphToTree(g) {
@@ -346,30 +364,20 @@
     return rootTree;
   }
 
-  /** Moves every node that is connected to the root into its place, using the
-      layout the user picked (layoutMode). Nodes that are not connected to
-      anything are left where they are. */
-  function relayout(g) {
+  /** Moves every node that is connected to the root into its sideways-tree position.
+      Nodes that are not connected to anything are left where they are. */
+  function relayoutTree(g) {
     if (g.nodes.length === 0) return;
     const tree = graphToTree(g);
+    nextRow = 0;
+    placeNode(tree, 0);
 
-    if (layoutMode === 'radial') {
-      placeNode(tree, 0, 2 * Math.PI, 0);
-    } else {
-      placeTreeNode(tree, 0, { next: 0 });
-      // The tree's rows start at y = 0 and go down. Shift everything up by half
-      // the height so the map is centred around y = 0 like the radial one.
-      const shift = (countLeaves(tree) - 1) * ROW_GAP * 0.5;
-      (function moveUp(treeNode) {
-        treeNode.y -= shift;
-        treeNode.children.forEach(moveUp);
-      })(tree);
-    }
-
+    // Copy the positions into the real nodes. We subtract tree.y so the root
+    // ends up at y = 0 (the middle of the map) instead of somewhere below it.
     (function copyPositions(treeNode) {
       const graphNode = g.nodes.find((n) => n.id === treeNode.id);
       graphNode.x = treeNode.x;
-      graphNode.y = treeNode.y;
+      graphNode.y = treeNode.y - tree.y;
       treeNode.children.forEach(copyPositions);
     })(tree);
   }
@@ -385,7 +393,7 @@
         0,
         0,
         isRoot ? 'ellipse' : 'round',
-        isRoot ? ROOT_COLOR : DEFAULT_COLOR
+        isRoot ? ROOT_FILL : DEFAULT_FILL
       );
       g.nodes.push(node);
       if (!isRoot) g.edges.push(makeEdge(parentId, node.id));
@@ -394,13 +402,13 @@
 
     addNode(tree, null);
     g.rootId = g.nodes[0].id;
-    relayout(g);
+    relayoutTree(g);
     return g;
   }
 
   /** A brand-new map: just one centre node with the note's title. */
   function newMap(title) {
-    const root = makeNode(title || 'Main idea', 0, 0, 'ellipse', ROOT_COLOR);
+    const root = makeNode(title || 'Main idea', 0, 0, 'ellipse', ROOT_FILL);
     return { nodes: [root], edges: [], rootId: root.id };
   }
 
@@ -421,7 +429,7 @@
       const b = findNode(edge.to);
       if (!a || !b) continue;
       const coordinates = { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
-      const isSelected = selection.type === 'edge' && selection.id === edge.id;
+      const isSelected = selection.edgeId === edge.id;
 
       const line = svgEl('line', coordinates);
       line.setAttribute('class', 'mm-edge' + (isSelected ? ' selected' : ''));
@@ -440,32 +448,44 @@
     updateToolbar();
   }
 
-  /** Builds the SVG for one node: a shape plus its text. */
+  /** Builds just the outline shape of a node (w = width, h = height). */
+  function buildShape(node, w, h) {
+    if (node.shape === 'ellipse') {
+      return svgEl('ellipse', { cx: 0, cy: 0, rx: w / 2, ry: h / 2 });
+    }
+    if (node.shape === 'diamond') {
+      return svgEl('polygon', {
+        points: '0,' + -h / 2 + ' ' + w / 2 + ',0 0,' + h / 2 + ' ' + -w / 2 + ',0',
+      });
+    }
+    const corner = node.shape === 'round' ? h / 2 : 4;
+    return svgEl('rect', { x: -w / 2, y: -h / 2, width: w, height: h, rx: corner });
+  }
+
+  /** Builds the SVG for one node: (optional selection outline) + shape + text. */
   function drawNode(node) {
     const size = getSize(node);
     const w = size.w;
     const h = size.h;
 
     const group = svgEl('g', { transform: 'translate(' + node.x + ' ' + node.y + ')' });
-    let className = 'mm-node';
-    if (selection.type === 'node' && selection.id === node.id) className += ' selected';
-    if (connectSourceId === node.id) className += ' connect-source';
-    group.setAttribute('class', className);
+    const isSelected = selection.nodeIds.has(node.id);
+    const isConnectSource = connectSourceId === node.id;
+    group.setAttribute('class', 'mm-node' + (isSelected ? ' selected' : ''));
 
-    let shape;
-    if (node.shape === 'ellipse') {
-      shape = svgEl('ellipse', { cx: 0, cy: 0, rx: w / 2, ry: h / 2 });
-    } else if (node.shape === 'diamond') {
-      shape = svgEl('polygon', {
-        points: '0,' + -h / 2 + ' ' + w / 2 + ',0 0,' + h / 2 + ' ' + -w / 2 + ',0',
-      });
-    } else {
-      const corner = node.shape === 'round' ? h / 2 : 4;
-      shape = svgEl('rect', { x: -w / 2, y: -h / 2, width: w, height: h, rx: corner });
+    // The orange outline around selected nodes. It is a SEPARATE, slightly bigger
+    // shape, so it never hides the node's own border color.
+    if (isSelected || isConnectSource) {
+      const halo = buildShape(node, w + 12, h + 12);
+      halo.setAttribute('class', 'mm-halo' + (isConnectSource ? ' connect-source' : ''));
+      group.appendChild(halo);
     }
+
+    // The node itself. fill = inside color, stroke = border color.
+    const shape = buildShape(node, w, h);
     shape.setAttribute('class', 'mm-shape');
-    shape.setAttribute('fill', node.color); // FILL = inside the shape
-    shape.setAttribute('stroke', getBorderColor(node)); // BORDER = the outline
+    shape.setAttribute('fill', node.fill);
+    shape.setAttribute('stroke', node.borderColor);
     group.appendChild(shape);
 
     // Cut very long text so it stays inside the shape (the full text is kept).
@@ -473,7 +493,8 @@
     const maxChars = Math.floor(usableWidth / CHAR_WIDTH);
     const shown = node.text.length > maxChars ? node.text.slice(0, maxChars - 1) + '…' : node.text;
 
-    const label = svgEl('text', { x: 0, y: 0, fill: getTextColor(node) }); // TEXT color
+    // Text color: the one the user picked, or black/white if they never picked one.
+    const label = svgEl('text', { x: 0, y: 0, fill: node.textColor || textColorFor(node.fill) });
     label.setAttribute('class', 'mm-text');
     label.textContent = shown; // textContent (not innerHTML) keeps note text from running as code
     group.appendChild(label);
@@ -481,20 +502,29 @@
     return group;
   }
 
+  /** Puts a color into a color picker (unless the user is using that picker right now). */
+  function showColor(input, color) {
+    if (document.activeElement !== input) input.value = color;
+  }
+
   /** Keeps the buttons in sync: greyed out when they cannot be used. */
   function updateToolbar() {
-    const node = selectedNode();
-    if (node) {
-      colorInput.value = node.color;
-      textColorInput.value = getTextColor(node);
-      borderColorInput.value = getBorderColor(node);
-      shapeSelect.value = node.shape;
+    const nodes = selectedNodes();
+    const first = nodes[0];
+
+    // With several nodes selected, the pickers show the colors of the first one.
+    if (first) {
+      showColor(fillInput, first.fill);
+      showColor(textColorInput, first.textColor || textColorFor(first.fill));
+      showColor(borderInput, first.borderColor);
+      shapeSelect.value = first.shape;
     }
-    colorInput.disabled = !node;
-    textColorInput.disabled = !node;
-    borderColorInput.disabled = !node;
-    shapeSelect.disabled = !node;
-    deleteButton.disabled = selection.type === null;
+    const noNodes = nodes.length === 0;
+    fillInput.disabled = noNodes;
+    textColorInput.disabled = noNodes;
+    borderInput.disabled = noNodes;
+    shapeSelect.disabled = noNodes;
+    deleteButton.disabled = !hasSelection();
     undoButton.disabled = undoStack.length === 0;
     redoButton.disabled = redoStack.length === 0;
     connectButton.classList.toggle('active', connectMode);
@@ -599,14 +629,10 @@
 
   function restoreGraph(json) {
     graph = JSON.parse(json);
-    selection = { type: null, id: null };
+    clearSelection();
     connectSourceId = null;
     render();
     scheduleSave();
-  }
-
-  function select(type, id) {
-    selection = { type: type, id: id };
   }
 
   /** Inserts a new, unconnected shape and lets the user type its text. */
@@ -617,79 +643,79 @@
       graph.nodes.push(node);
       if (!graph.rootId) graph.rootId = node.id;
     });
-    select('node', node.id);
+    selectOnlyNode(node.id);
     ensureVisible(node);
     render();
     startEditing(node.id);
   }
 
-  /** Adds a node connected to the selected one.
-      Sideways tree: the child goes to the right of its parent, below its siblings.
-      Radial: the child goes on the side facing away from the centre. */
+  /** Adds a node connected to the selected one, placed to its RIGHT (like the sideways tree). */
   function addChild() {
     const parent = selectedNode();
     if (!parent) {
-      setStatus('Select a node first, then press + Child.');
+      setStatus('Select ONE node first, then press + Child.');
       return;
     }
     const siblings = graph.edges.filter((e) => e.from === parent.id).length;
 
-    let childX;
-    let childY;
-    if (layoutMode === 'tree') {
-      childX = parent.x + COLUMN_GAP;
-      childY = parent.y + siblings * ROW_GAP;
-    } else {
-      const root = findNode(graph.rootId) || parent;
-      let angle;
-      if (parent === root) {
-        angle = siblings * 0.9; // spread the root's children around it
-      } else {
-        const awayFromRoot = Math.atan2(parent.y - root.y, parent.x - root.x);
-        const fan = (siblings % 2 === 1 ? 1 : -1) * Math.ceil(siblings / 2) * 0.5;
-        angle = awayFromRoot + fan;
-      }
-      childX = parent.x + 220 * Math.cos(angle);
-      childY = parent.y + 220 * Math.sin(angle);
-    }
-
-    const child = makeNode('New idea', childX, childY);
+    // Start to the right of the parent, a bit lower for every child it already has.
+    // findFreeSpot then nudges the new node if something is already there.
+    const spot = findFreeSpot({ x: parent.x + LEVEL_GAP * 0.7, y: parent.y + siblings * ROW_GAP });
+    const child = makeNode('New idea', spot.x, spot.y);
     change(() => {
       graph.nodes.push(child);
       graph.edges.push(makeEdge(parent.id, child.id));
     });
-    select('node', child.id);
+    selectOnlyNode(child.id);
     ensureVisible(child);
     render();
     startEditing(child.id);
   }
 
+  /** Deletes ALL selected nodes (and the lines attached to them), or the selected line. */
   function deleteSelected() {
-    if (selection.type === 'node') {
-      const id = selection.id;
+    if (selection.nodeIds.size > 0) {
+      const ids = selection.nodeIds;
       change(() => {
-        graph.nodes = graph.nodes.filter((n) => n.id !== id);
-        graph.edges = graph.edges.filter((e) => e.from !== id && e.to !== id);
-        if (graph.rootId === id) graph.rootId = graph.nodes.length > 0 ? graph.nodes[0].id : null;
+        graph.nodes = graph.nodes.filter((n) => !ids.has(n.id));
+        graph.edges = graph.edges.filter((e) => !ids.has(e.from) && !ids.has(e.to));
+        if (!graph.nodes.some((n) => n.id === graph.rootId)) {
+          graph.rootId = graph.nodes.length > 0 ? graph.nodes[0].id : null;
+        }
       });
-    } else if (selection.type === 'edge') {
-      const id = selection.id;
+    } else if (selection.edgeId !== null) {
+      const id = selection.edgeId;
       change(() => {
         graph.edges = graph.edges.filter((e) => e.id !== id);
       });
     }
-    selection = { type: null, id: null };
+    clearSelection();
     render();
+  }
+
+  /** Used by the three color pickers. property is 'fill', 'textColor' or 'borderColor'.
+      It colors ALL selected nodes. A whole color-picking session counts as ONE undo step. */
+  function applyColor(input, property) {
+    const nodes = selectedNodes();
+    if (nodes.length === 0) return;
+    if (!colorEditing) {
+      pushUndo();
+      colorEditing = true;
+    }
+    nodes.forEach((node) => {
+      node[property] = input.value;
+    });
+    render();
+    scheduleSave();
   }
 
   function toggleConnectMode() {
     connectMode = !connectMode;
     connectSourceId = null;
-    if (connectMode) {
-      setHint('Connect: click the first box, then the box to join it to. Esc to cancel.');
-    } else {
-      defaultHint();
-    }
+    setHint(
+      connectMode ? 'Connect: click the first box, then the box to join it to. Esc to stop.' : ''
+    );
+    if (!connectMode) defaultHint();
     render();
   }
 
@@ -700,25 +726,20 @@
       setHint('Now click the box to connect it to. (Click it again to cancel.)');
     } else if (connectSourceId === nodeId) {
       connectSourceId = null;
-      setHint('Connect: click the first box, then the box to join it to. Esc to cancel.');
+      setHint('Connect: click the first box, then the box to join it to. Esc to stop.');
     } else {
       const fromId = connectSourceId;
       connectSourceId = null;
       if (!edgeExists(fromId, nodeId)) {
         change(() => graph.edges.push(makeEdge(fromId, nodeId)));
       }
-      // CHANGED: Connect mode now turns itself off after ONE line, so users
-      // are not left wondering why it is still on.
-      connectMode = false;
-      setStatus('Connected ✓ (press Connect again to draw another line)');
-      defaultHint();
+      setHint('Connected! Pick another pair, or press Esc to stop.');
     }
     render();
   }
 
-  /** Re-arranges the map with the chosen layout, then fits it on screen. */
   function rearrange() {
-    change(() => relayout(graph));
+    change(() => relayoutTree(graph));
     fitView();
   }
 
@@ -793,51 +814,104 @@
   appBox.addEventListener('click', (event) => {
     const button = event.target.closest('[data-action]');
     if (button && actions[button.dataset.action]) {
+      // Move the keyboard focus back to the canvas first, so that pressing the
+      // Spacebar later does not "click" this button again.
+      canvasBox.focus();
       actions[button.dataset.action](button);
     }
   });
 
-  /* ---- The three color pickers. Each one changes ONLY its own property. ---- */
-
-  // Fill = the color inside the shape.
-  colorInput.addEventListener('change', () => {
-    const node = selectedNode();
-    if (node) change(() => (node.color = colorInput.value));
-  });
-
-  // Text = the color of the letters.
-  textColorInput.addEventListener('change', () => {
-    const node = selectedNode();
-    if (node) change(() => (node.textColor = textColorInput.value));
-  });
-
-  // Border = the color of the outline.
-  borderColorInput.addEventListener('change', () => {
-    const node = selectedNode();
-    if (node) change(() => (node.borderColor = borderColorInput.value));
-  });
+  /* ---- The three color pickers ----
+     "input" happens while you drag around in the picker (live preview).
+     "change" happens when you close the picker. We handle both so it works everywhere. */
+  function connectColorPicker(input, property) {
+    input.addEventListener('input', () => applyColor(input, property));
+    input.addEventListener('change', () => {
+      applyColor(input, property);
+      colorEditing = false; // the picking session is over
+    });
+  }
+  connectColorPicker(fillInput, 'fill');
+  connectColorPicker(textColorInput, 'textColor');
+  connectColorPicker(borderInput, 'borderColor');
 
   shapeSelect.addEventListener('change', () => {
-    const node = selectedNode();
-    if (node) change(() => (node.shape = shapeSelect.value));
-  });
-
-  // Changing the layout choice re-arranges the map right away.
-  layoutSelect.addEventListener('change', () => {
-    layoutMode = layoutSelect.value;
-    rearrange();
+    const nodes = selectedNodes();
+    if (nodes.length > 0) {
+      change(() => nodes.forEach((node) => (node.shape = shapeSelect.value)));
+    }
   });
 
   /* ---- Mouse on the canvas ---- */
+
+  /** Starts moving the camera. */
+  function startPan(event) {
+    drag = {
+      kind: 'pan',
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startViewX: view.x,
+      startViewY: view.y,
+    };
+  }
+
+  /** Starts moving ALL the selected nodes together. */
+  function startNodeDrag(point, collapseTo) {
+    drag = {
+      kind: 'node',
+      startPoint: point,
+      // remember where every selected node started
+      items: selectedNodes().map((node) => ({ node: node, startX: node.x, startY: node.y })),
+      collapseTo: collapseTo, // if you only CLICK (no move), select just this node
+      moved: false,
+      before: JSON.stringify(graph), // for undo
+    };
+  }
+
+  /** Starts the blue selection rectangle. keepOld = Shift/Ctrl held, keep what is selected. */
+  function startBoxSelect(point, keepOld) {
+    const baseIds = keepOld ? new Set(selection.nodeIds) : new Set();
+    if (!keepOld) clearSelection();
+    const marquee = svgEl('rect', { class: 'mm-marquee', x: point.x, y: point.y, width: 0, height: 0 });
+    world.appendChild(marquee); // render() does not clear this, so it stays while we drag
+    drag = { kind: 'box', startPoint: point, baseIds: baseIds, marquee: marquee };
+  }
+
+  /** While dragging the blue rectangle: resize it and select every node it touches. */
+  function updateBoxSelect(point) {
+    const start = drag.startPoint;
+    const box = {
+      left: Math.min(start.x, point.x),
+      right: Math.max(start.x, point.x),
+      top: Math.min(start.y, point.y),
+      bottom: Math.max(start.y, point.y),
+    };
+    drag.marquee.setAttribute('x', box.left);
+    drag.marquee.setAttribute('y', box.top);
+    drag.marquee.setAttribute('width', box.right - box.left);
+    drag.marquee.setAttribute('height', box.bottom - box.top);
+
+    const picked = new Set(drag.baseIds);
+    findNodesInBox(box).forEach((node) => picked.add(node.id));
+    selection = { nodeIds: picked, edgeId: null };
+    render();
+  }
 
   svg.addEventListener('pointerdown', (event) => {
     if (event.button !== 0) return; // left button only
     canvasBox.focus();
     svg.setPointerCapture(event.pointerId); // keep receiving moves even outside the panel
 
+    // Spacebar held = move the camera, no matter what is under the mouse.
+    if (spaceDown) {
+      startPan(event);
+      return;
+    }
+
     const point = toWorld(event);
     const node = findNodeAt(point);
     const edgeElement = event.target.closest('[data-edge-id]');
+    const addToSelection = event.shiftKey || event.ctrlKey || event.metaKey;
     // (Connect mode uses plain clicks, so double-click detection is off while it is on.)
     const doubleClick = connectMode ? false : isDoubleClick(event, node ? node.id : null);
 
@@ -849,36 +923,35 @@
       if (doubleClick) {
         // Double-click a node = rename it. (setTimeout: let the browser finish its own
         // mouse-down focus handling first, otherwise it would close the text box at once.)
-        select('node', node.id);
+        selectOnlyNode(node.id);
         render();
         setTimeout(() => startEditing(node.id), 0);
         return;
       }
-      select('node', node.id);
-      drag = {
-        kind: 'node',
-        id: node.id,
-        startPoint: point,
-        startX: node.x,
-        startY: node.y,
-        moved: false,
-        before: JSON.stringify(graph), // for undo
-      };
+      if (addToSelection) {
+        toggleNodeInSelection(node.id);
+        render();
+        return;
+      }
+      // Plain click on a node:
+      //  - not selected yet     -> select only this node
+      //  - already in a group   -> keep the group, so the whole group can be dragged
+      let collapseTo = null;
+      if (!selection.nodeIds.has(node.id)) {
+        selectOnlyNode(node.id);
+      } else if (selection.nodeIds.size > 1) {
+        collapseTo = node.id;
+      }
+      startNodeDrag(point, collapseTo);
     } else if (edgeElement) {
-      select('edge', edgeElement.getAttribute('data-edge-id'));
+      selectEdge(edgeElement.getAttribute('data-edge-id'));
     } else if (doubleClick) {
       // Double-click empty space = new box right there.
       setTimeout(() => addShape('round', point), 0);
       return;
     } else {
-      select(null, null);
-      drag = {
-        kind: 'pan',
-        startClientX: event.clientX,
-        startClientY: event.clientY,
-        startViewX: view.x,
-        startViewY: view.y,
-      };
+      // Click and hold on empty space = start the selection rectangle.
+      startBoxSelect(point, addToSelection);
     }
     render();
   });
@@ -891,24 +964,43 @@
       render();
     } else if (drag.kind === 'node') {
       const point = toWorld(event);
-      const node = findNode(drag.id);
-      node.x = drag.startX + (point.x - drag.startPoint.x);
-      node.y = drag.startY + (point.y - drag.startPoint.y);
+      const dx = point.x - drag.startPoint.x;
+      const dy = point.y - drag.startPoint.y;
+      if (!drag.moved && Math.abs(dx) + Math.abs(dy) < 3) return; // ignore tiny hand shakes
+      drag.items.forEach((item) => {
+        item.node.x = item.startX + dx;
+        item.node.y = item.startY + dy;
+      });
       drag.moved = true;
       render();
+    } else if (drag.kind === 'box') {
+      updateBoxSelect(toWorld(event));
     }
   });
 
-  svg.addEventListener('pointerup', () => {
-    if (drag && drag.kind === 'node' && drag.moved) {
-      undoStack.push(drag.before); // now the move can be undone
-      if (undoStack.length > MAX_UNDO_STEPS) undoStack.shift();
-      redoStack.length = 0;
-      scheduleSave();
-      render();
+  /** The mouse button was released (or the drag was cancelled). */
+  function endDrag() {
+    if (drag && drag.kind === 'node') {
+      if (drag.moved) {
+        undoStack.push(drag.before); // now the move can be undone
+        if (undoStack.length > MAX_UNDO_STEPS) undoStack.shift();
+        redoStack.length = 0;
+        scheduleSave();
+        render();
+      } else if (drag.collapseTo) {
+        // It was just a click on a node inside a group: select only that node.
+        selectOnlyNode(drag.collapseTo);
+        render();
+      }
+    }
+    if (drag && drag.kind === 'box') {
+      drag.marquee.remove(); // hide the blue rectangle
     }
     drag = null;
-  });
+  }
+
+  svg.addEventListener('pointerup', endDrag);
+  svg.addEventListener('pointercancel', endDrag);
 
   /* Scroll = pan. Ctrl + scroll (or trackpad pinch) = zoom. */
   svg.addEventListener(
@@ -929,21 +1021,35 @@
 
   /* ---- Keyboard ---- */
 
+  /** Remembers whether the Spacebar is held, and shows a "hand" cursor while it is. */
+  function setSpaceDown(isDown) {
+    spaceDown = isDown;
+    canvasBox.classList.toggle('pan-ready', isDown);
+  }
+
   document.addEventListener('keydown', (event) => {
     const tag = event.target.tagName;
     if (tag === 'INPUT' || tag === 'SELECT') return; // the user is typing or choosing something
     const ctrl = event.ctrlKey || event.metaKey;
 
-    if (event.key === 'Delete' || event.key === 'Backspace') {
+    if (event.key === ' ') {
+      event.preventDefault(); // stop the page from scrolling
+      setSpaceDown(true);
+    } else if (event.key === 'Delete' || event.key === 'Backspace') {
       deleteSelected();
     } else if (event.key === 'Enter' || event.key === 'F2') {
-      if (selectedNode()) startEditing(selection.id);
+      const node = selectedNode();
+      if (node) startEditing(node.id);
     } else if (event.key === 'Tab') {
       event.preventDefault();
       addChild();
     } else if (event.key === 'Escape') {
       if (connectMode) toggleConnectMode();
-      select(null, null);
+      clearSelection();
+      render();
+    } else if (ctrl && event.key.toLowerCase() === 'a') {
+      event.preventDefault(); // Ctrl+A = select every node
+      selection = { nodeIds: new Set(graph.nodes.map((n) => n.id)), edgeId: null };
       render();
     } else if (ctrl && event.key.toLowerCase() === 'z') {
       event.preventDefault();
@@ -953,6 +1059,12 @@
       redo();
     }
   });
+
+  // Releasing the Spacebar (or clicking away from the panel) ends "move the map" mode.
+  document.addEventListener('keyup', (event) => {
+    if (event.key === ' ') setSpaceDown(false);
+  });
+  window.addEventListener('blur', () => setSpaceDown(false));
 
   /* ================== 8. TALKING TO JOPLIN (load / save) =================== */
 
@@ -986,7 +1098,7 @@
     const reply = await askJoplin({ name: 'load' });
     undoStack.length = 0;
     redoStack.length = 0;
-    selection = { type: null, id: null };
+    clearSelection();
     connectSourceId = null;
 
     if (reply.error) {
@@ -1004,24 +1116,19 @@
 
   /** Accepts the current save format, an older "tree" format, or nothing (new map). */
   function readSavedData(data, title) {
-    if (data && Array.isArray(data.nodes)) return data;
+    if (data && Array.isArray(data.nodes)) return normalizeGraph(data);
     if (data && typeof data.text === 'string') return treeToGraph(data);
     return newMap(title);
   }
 
-  /** "Auto" and "From outline": ask Joplin for a tree, then lay it out with the chosen layout.
-      For "Auto" we also send the Nodes choice ('words' or 'phrases'). */
+  /** "Auto" and "From outline": ask Joplin for a tree, then lay it out sideways. */
   async function generateFromNote(kind) {
     if (!currentNoteId) {
       setStatus('Open a note first.');
       return;
     }
     setStatus('Working…');
-    const reply = await askJoplin({
-      name: kind,
-      noteId: currentNoteId,
-      mode: termModeSelect.value, // only 'auto' uses this; 'outline' ignores it
-    });
+    const reply = await askJoplin({ name: kind, noteId: currentNoteId });
     if (reply.error) {
       setStatus('Error: ' + reply.error);
       return;
@@ -1032,7 +1139,7 @@
     }
     change(() => {
       graph = treeToGraph(reply.tree);
-      selection = { type: null, id: null };
+      clearSelection();
     });
     fitView();
     setStatus('Map created. Press Ctrl+Z to undo.');
@@ -1055,21 +1162,12 @@
     else render();
   }).observe(canvasBox);
 
-  layoutSelect.value = layoutMode; // make the dropdown match the starting layout
   defaultHint();
   render();
   loadCurrentNote();
 
   // This lets us unit-test the layout code in Node. Joplin ignores it.
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = {
-      countLeaves,
-      placeNode,
-      placeTreeNode,
-      graphToTree,
-      relayout,
-      treeToGraph,
-      newMap,
-    };
+    module.exports = { placeNode, graphToTree, relayoutTree, treeToGraph, newMap, normalizeGraph };
   }
 })();

@@ -13,12 +13,6 @@
  *
  * Colors use Joplin's theme variables (--joplin-...), so light and dark themes
  * both work. The value after the comma is the fallback if the variable is missing.
- *
- * CHANGED after the ethnographic study:
- *   - .mm-shape no longer forces a border color. The border color now comes
- *     from the node itself (the "Border" picker). Only the orange "selected"
- *     and "connect-source" rules below still override it.
- *   - The three color pickers share the same size.
  * ========================================================================== */
 
 /* 1. Make the panel fill all the space Joplin gives it. */
@@ -31,12 +25,15 @@ body,
   overflow: hidden;
 }
 
-/* 2. The column. 100vh = "the full height of the panel". */
+/* 2. The column. 100vh = "the full height of the panel".
+      The BORDER around the whole panel separates the mind map from the note.
+      (box-sizing: border-box keeps the border INSIDE the 100vh, so nothing is cut off.) */
 #mm-app {
   display: flex;
   flex-direction: column;
   height: 100vh;
   box-sizing: border-box;
+  border: 3px solid #4a6fa5;
   font-family: var(--joplin-font-family, sans-serif);
   font-size: 13px;
   color: var(--joplin-color, #222);
@@ -57,6 +54,7 @@ body,
   justify-content: space-between;
   align-items: center;
   border-bottom: 1px solid var(--joplin-divider-color, #ccc);
+  background: var(--joplin-background-color3, #f0f0f0); /* slightly different shade = clear title bar */
 }
 
 /* wrap = if the panel is narrow, buttons move to the next line */
@@ -98,6 +96,11 @@ body,
 
 #mm-canvas.connecting {
   cursor: crosshair;
+}
+
+/* The Spacebar is held: dragging moves the whole map, so show a "hand" cursor. */
+#mm-canvas.pan-ready {
+  cursor: grab;
 }
 
 #mm-svg {
@@ -150,13 +153,12 @@ body,
   gap: 4px;
 }
 
-/* The three color pickers: Fill, Text and Border. */
-#mm-color,
-#mm-text-color,
-#mm-border-color {
+/* The three color pickers (Fill, Text, Border). */
+.mm-group input[type='color'] {
   width: 34px;
   height: 24px;
   padding: 0;
+  cursor: pointer;
 }
 
 /* ----------------------------- the drawing ------------------------------ */
@@ -181,22 +183,24 @@ body,
   cursor: pointer;
 }
 
-/* No "stroke:" here on purpose: the border color is set in mindmap.js
-   (node.borderColor). A CSS rule would always win over that. */
+/* The node's shape. NOTE: we do NOT set "stroke" (the border color) or "fill" here.
+   They are set in mindmap.js from each node's own colors. If you put them here,
+   CSS would win and the Fill / Border color pickers would stop working. */
 .mm-shape {
-  stroke-width: 1.5;
+  stroke-width: 2;
   cursor: grab;
 }
 
-/* These two DO set a stroke: the orange outline shows which node is selected. */
-.mm-node.selected .mm-shape {
-  stroke: #e8590c;
-  stroke-width: 3.5;
-}
-
-.mm-node.connect-source .mm-shape {
+/* The orange outline drawn AROUND a selected node (a separate shape, so the
+   node's own border color stays visible). */
+.mm-halo {
+  fill: none;
   stroke: #e8590c;
   stroke-width: 3;
+  pointer-events: none;
+}
+
+.mm-halo.connect-source {
   stroke-dasharray: 6 4;
 }
 
@@ -206,6 +210,16 @@ body,
   dominant-baseline: central;
   pointer-events: none; /* clicks go to the shape underneath */
   user-select: none;
+}
+
+/* The blue rectangle you see while dragging to select many nodes. */
+.mm-marquee {
+  fill: rgba(28, 126, 214, 0.15);
+  stroke: #1c7ed6;
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  vector-effect: non-scaling-stroke; /* keep the line thin even when zoomed */
+  pointer-events: none;
 }
 
 /* The text box that appears when you rename a node. */
